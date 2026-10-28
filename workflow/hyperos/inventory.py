@@ -96,7 +96,7 @@ def scan_mount(mount, part, paths, details, package_errors, aapt):
                 continue
             rel = "/" + str(p.relative_to(mount))
             try:
-                ctx = os.getxattr(p, "security.selinux", follow_symlinks=False).decode("utf8", "replace").strip("\\0")
+                ctx = os.getxattr(p, "security.selinux", follow_symlinks=False).decode("utf8", "replace").strip("\0")
             except OSError:
                 ctx = "xattr-unavailable-or-policy-derived"
             package_id = ""
@@ -105,7 +105,7 @@ def scan_mount(mount, part, paths, details, package_errors, aapt):
                                         capture_output=True, text=True, timeout=90)
                 if result.returncode:
                     raise RuntimeError(result.stderr.strip()[-300:] or "aapt returned nonzero")
-                match = re.search(r"(?m)^package:\\s+name='([^']+)'", result.stdout)
+                match = re.search(r"(?m)^package:\s+name='([^']+)'", result.stdout)
                 if not match:
                     raise RuntimeError("No package identity in badging")
                 package_id = match.group(1)
@@ -178,14 +178,14 @@ def inspect():
             finally:shutil.rmtree(out,ignore_errors=True)
         write("apks.txt","\n".join(sorted(apks))+"\n")
         headers=("partition","path","android_package_id","uid","gid","mode","bytes","selinux_xattr")
-        write("apks-detailed.tsv", "\\t".join(headers)+"\\n"+"\\n".join("\\t".join(map(str,row)) for row in rows)+"\\n")
+        write("apks-detailed.tsv", "\t".join(headers)+"\n"+"\n".join("\t".join(map(str,row)) for row in rows)+"\n")
         with (OUT/"apks-detailed.csv").open("w", newline="", encoding="utf-8") as dest:
             writer=csv.writer(dest);writer.writerow(headers);writer.writerows(rows)
-        write("apk-package-errors.txt", "\\n".join(package_errors)+"\\n" if package_errors else "All APK identities parsed.\\n")
+        write("apk-package-errors.txt", "\n".join(package_errors)+"\n" if package_errors else "All APK identities parsed.\n")
         write("apk-summary.json", json.dumps({"device":"yunluo","region":"Global MIXM",
               "firmware_version":VER,"total_apks":len(rows),
               "partitions":sorted({row[0] for row in rows}),
-              "package_id_parse_failures":len(package_errors)},indent=2)+"\\n")
+              "package_id_parse_failures":len(package_errors)},indent=2)+"\n")
         write("filesystems.tsv","\n".join(fss)+"\n")
         write("warnings.txt","\n".join(errors)+"\n" if errors else "No partition inventory warnings.\n")
         if errors:raise RuntimeError("Incomplete inventory: see warnings.txt")
