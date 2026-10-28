@@ -1,0 +1,87 @@
+name: HyperOS Build 1 - Stage 1 Download and Stage 2 Super Audit
+
+# Trigger automatically on first creation and later edits. No release or firmware uploads.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/hyperos-build1-stages1-2.yml'
+      - 'workflow/hyperos/**'
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Download only, or download and audit stock super'
+        type: choice
+        required: true
+        default: download-and-audit
+        options:
+          - download-and-audit
+          - download-only
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yunluo-hyperos-stock-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stock-firmware:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 230
+    env:
+      HYPEROS_ARCHIVE: ${{ runner.temp }}/yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz
+      HYPEROS_REPORTS: ${{ github.workspace }}/reports-hyperos
+      EXPECTED_MD5: f8dbb84a10dc96a9d3ce9e78883e87f3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm pinned firmware and script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile workflow/hyperos/*.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, 'workflow/hyperos')
+          from firmware import DEVICE, REGION, VERSION, NAME, MD5
+          assert DEVICE == "yunluo" and REGION == "Global MIXM"
+          assert VERSION == "OS1.0.9.0.ULYMIXM"
+          assert NAME.endswith("_global_f8dbb84a10.tgz")
+          assert MD5 == "f8dbb84a10dc96a9d3ce9e78883e87f3"
+          print("Verified exact Global MIXM target; no India/EEA crossover.")
+          PY
+      - name: Install download and LP image tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates file python3
+          python3 workflow/hyperos/inventory.py --install-tools
+          df -h "$RUNNER_TEMP"
+      - name: Stage 1 - Download exact stock HyperOS 1 Global fastboot ROM
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HYPEROS_REPORTS"
+          python3 workflow/hyperos/download.py \
+            --output "$HYPEROS_ARCHIVE" \
+            --report "$HYPEROS_REPORTS/download-sources.json"
+          echo "$EXPECTED_MD5  $HYPEROS_ARCHIVE" | md5sum -c -
+          sha256sum "$HYPEROS_ARCHIVE" | tee "$HYPEROS_REPORTS/stock-archive-sha256.txt"
+          stat -c '%s bytes downloaded' "$HYPEROS_ARCHIVE" | tee "$HYPEROS_REPORTS/stock-archive-bytes.txt"
+          df -h "$RUNNER_TEMP"
+      - name: Stage 2 - Read-only super geometry and filesystem audit
+        if: github.event_name == 'push' || inputs.stage == 'download-and-audit'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=HYPEROS_ARCHIVE,HYPEROS_REPORTS,RUNNER_TEMP,GITHUB_STEP_SUMMARY \
+            python3 workflow/hyperos/geometry.py
+      - name: Upload Stage 1 and Stage 2 reports only (no full firmware)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-hyperos-build1-stock-download-super-geometry
+          path: reports-hyperos/
+          retention-days: 30
+          if-no-files-found: warn
