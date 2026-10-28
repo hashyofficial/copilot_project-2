@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 230
     env:
-      HYPEROS_ARCHIVE: ${{ runner.temp }}/yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz
+      HYPEROS_ARCHIVE: ${{ github.workspace }}/.hyperos-work/yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz
       HYPEROS_REPORTS: ${{ github.workspace }}/reports-hyperos
       EXPECTED_MD5: f8dbb84a10dc96a9d3ce9e78883e87f3
     steps:
