@@ -1,6 +1,6 @@
 # HyperOS 1 Global OS1.0.9.0.ULYMIXM / Redmi Pad yunluo
 # User's latest uploaded selection sheet (2), selected [X] entries only.
-# Original full TXT file SHA256: 738e62943a023e0abbf29c7ff063f0c3fa66663cd4976cf92e9e772c4ca71989
+# Latest selection sheet (2) SHA256: 8bf21303445481db6dcc2d8cc2444008bd33748326c028985a1d091fab3b6122
 # First column: 3-digit selection index; second: exact Android package name.
 # 101 package IDs; 102 on-disk APK files because com.android.stk has two instances.
 # EXPERIMENTAL: core phone service changes selected; SetupWizard and Cleaner retained; boot is NOT guaranteed.
