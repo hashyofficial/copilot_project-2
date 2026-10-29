@@ -1,0 +1,190 @@
+name: HyperOS Build 3 - Release v.0.2 HyperOS1 Yunluo
+
+# Release-only distribution. A verified full ZIP is split solely for GitHub's 2GiB asset cap.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/hyperos-build3-release-v02.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hyperos-build3-release-v02-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      HYPEROS_ARCHIVE: ${{ github.workspace }}/.hyperos-work/stock/yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz
+      HYPEROS_REPORTS: ${{ github.workspace }}/.hyperos-work/reports
+      BUILD3_REPORTS: ${{ github.workspace }}/.hyperos-work/reports
+      BUILD3_PRIVATE: ${{ github.workspace }}/.hyperos-work/private
+      BUILD3_OUTPUT: ${{ github.workspace }}/.hyperos-work/release
+      PHOTON_APK: ${{ github.workspace }}/.hyperos-work/PhotonGallery-arm64-v8a.apk
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Build 3 source and exactly 124 selected package IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile workflow/hyperos/*.py scripts/hyperos_*.py stage3/scan.py
+          python3 - <<'PY'
+          import pathlib,sys
+          sys.path.insert(0,'scripts')
+          from hyperos_build3_v02 import selected,PROTECT,RAW_SHA,RAW_BYTES
+          x=selected()
+          assert len(x)==124 and x.keys().isdisjoint(PROTECT)
+          assert RAW_BYTES==9126805504 and len(RAW_SHA)==64
+          for name,index in {
+              "com.miui.msa.global":56,
+              "com.android.providers.contacts":126,
+              "com.android.overlay.gmscontactprovider":245,
+              "com.miui.systemui.carriers.overlay":256,
+              "com.android.role.notes.enabled":281,
+              "com.google.android.overlay.gmsconfig.contacts":295,
+              "com.mediatek.cellbroadcastuiresoverlay":301,
+          }.items():
+              assert x[name]==index,(name,x.get(name))
+          for keep in ("com.miui.cleaner","com.miui.securitycenter",
+                       "com.google.android.setupwizard","com.google.android.partnersetup",
+                       "com.xiaomi.discover"):
+              assert keep not in x
+          print("Build3 policy: 124 selections and explicit core system keeps verified")
+          PY
+          mkdir -p "$BUILD3_REPORTS" "$BUILD3_PRIVATE" "$BUILD3_OUTPUT" "$(dirname "$HYPEROS_ARCHIVE")"
+
+      - name: Install EROFS and Android image tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates attr erofs-utils file python3 util-linux
+          python3 workflow/hyperos/inventory.py --install-tools
+          find "$ANDROID_HOME/build-tools" -maxdepth 2 -name aapt2 | head
+          df -h "$RUNNER_TEMP"
+
+      - name: Download official Photon Gallery v2.1.3 arm64 APK and verify SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+            "https://github.com/Bn5prS/Photon_Gallery/releases/download/v2.1.3/PhotonGallery-arm64-v8a.apk" \
+            -o "$PHOTON_APK"
+          echo "8a5039b05b7a8b57adb16de006c80e0a37f92debda9d745d3e3c398a4d311fe1  $PHOTON_APK" | sha256sum -c -
+          test "$(stat -c %s "$PHOTON_APK")" -eq 55828349
+          AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt2 -type f | sort | tail -1)"
+          "$AAPT" dump badging "$PHOTON_APK" | grep '^package:'
+          echo "Official Photon APK verified"
+
+      - name: Download checksum-pinned Xiaomi HyperOS 1 Global fastboot stock
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 workflow/hyperos/download.py --output "$HYPEROS_ARCHIVE" --report "$BUILD3_REPORTS/download-sources.json"
+          echo "f8dbb84a10dc96a9d3ce9e78883e87f3  $HYPEROS_ARCHIVE" | md5sum -c -
+          sha256sum "$HYPEROS_ARCHIVE" | tee "$BUILD3_REPORTS/source-archive-sha256.txt"
+
+      - name: Rebuild five EROFS partitions and verify selected removals and Photon system install
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=HYPEROS_ARCHIVE,HYPEROS_REPORTS,BUILD3_REPORTS,BUILD3_PRIVATE,PHOTON_APK,RUNNER_TEMP,ANDROID_HOME \
+            python3 -u scripts/hyperos_build3_v02.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD3_REPORTS" "$BUILD3_PRIVATE"
+          python3 - <<'PY'
+          import os,json,pathlib
+          private=pathlib.Path(os.environ["BUILD3_PRIVATE"])
+          m=json.loads((private/"manifest.json").read_text())
+          assert m["selected_package_count"]==124 and m["removed_apk_count"]==125
+          assert m["entire_app_folders_removed"]==106
+          assert m["individual_shared_overlay_apks_removed"]==19
+          assert sorted(m["rebuilt_partitions"])==["mi_ext_a","product_a","system_a","system_ext_a","vendor_a"]
+          assert m["source_lp_metadata_preserved"] and m["retained_apks_same_bytes_owner_mode_selinux"]
+          assert m["other_lp_regions_unchanged"] and m["all_selected_folder_paths_absent_after_rebuild"]
+          assert m["photon_system_app_verified"]
+          assert m["network_stack_apex_kept"]
+          assert set(m["apex_modules_removed"])=={"health_connect","ad_services"}
+          assert all(m["apex_modules_removed"].values())
+          assert m["photon_apk_sha256"]=="8a5039b05b7a8b57adb16de006c80e0a37f92debda9d745d3e3c398a4d311fe1"
+          assert all(p["removed_paths_absent_after_rebuild"] for p in m["partitions"])
+          assert (private/"super.sparse.img").stat().st_size>100_000_000
+          print("Verified 106 removed app/overlay directories, 19 overlay APKs, Photon, and targeted APEX")
+          print("APEX modules excluded:",m["apex_modules_removed"])
+          print("All other APEXes, including Network Stack and emergency CellBroadcast, retained")
+          PY
+
+      - name: Build and verify complete Xiaomi fastboot ZIP, CRC metadata, patched vbmeta and release segments
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u scripts/hyperos_package3_v02.py
+          python3 - <<'PY'
+          import os,pathlib,json,hashlib
+          out=pathlib.Path(os.environ["BUILD3_OUTPUT"])
+          rep=pathlib.Path(os.environ["BUILD3_REPORTS"])
+          m=json.loads((rep/"FASTBOOT_TEST_VERIFICATION.json").read_text())
+          assert m["status"]=="offline_verified_NOT_device_boot_tested"
+          assert m["selected_package_count"]==124 and m["removed_apk_count"]==125
+          assert m["entire_app_folders_removed"]==106 and m["individual_shared_overlay_apks_removed"]==19
+          assert m["vbmeta_flags"]==3 and m["other_firmware_files_unchanged"]
+          assert m["flash_scripts_preserved"] and m["photon_system_app_verified"]
+          assert m["network_stack_apex_kept"]
+          assert set(m["apex_modules_removed"])=={"health_connect","ad_services"}
+          assert all(m["apex_modules_removed"].values())
+          assert m["release_target"]=="v.0.2"
+          assert len(m["parts"])>=2
+          assert sum(x["bytes"] for x in m["parts"])==m["full_zip_bytes"]
+          for p in m["parts"]:
+              assert p["bytes"]<2000000000
+              assert (out/p["filename"]).is_file()
+              h=hashlib.sha256()
+              with (out/p["filename"]).open("rb") as f:
+                  for chunk in iter(lambda:f.read(8388608),b""):h.update(chunk)
+              assert h.hexdigest()==p["sha256"]
+          print("FULL firmware ZIP assembled/checked and all numbered release segments verified")
+          PY
+
+      - name: Prepare detailed release changelog and verification reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp release/HyperOS1-Yunluo-v.0.2-CHANGELOG.md "$BUILD3_OUTPUT/CHANGELOG.md"
+          cp "$BUILD3_REPORTS/FASTBOOT_TEST_VERIFICATION.json" "$BUILD3_OUTPUT/FASTBOOT_VERIFICATION.json"
+          cp "$BUILD3_REPORTS/build3-super-verification.json" "$BUILD3_OUTPUT/SUPER_VERIFICATION.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path(os.environ["BUILD3_OUTPUT"])
+          d=json.loads((p/"FASTBOOT_VERIFICATION.json").read_text())
+          paths=d["apex_modules_removed"]
+          assert paths.get("health_connect") and paths.get("ad_services")
+          outcome="Removed built-in APEX modules: "+repr(paths)+". Preserved Network Stack and CellBroadcast APEX. Updated APEXes from userdata remain out of scope."
+          with (p/"CHANGELOG.md").open("a",encoding="utf-8") as f:
+              f.write("\n## Actual Build 3 Health Connect inspection\n\n"+outcome+"\n")
+          print(outcome)
+          PY
+
+      - name: Publish v.0.2 HyperOS1 Yunluo GitHub Release with complete firmware bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "v.0.2" \
+            "$BUILD3_OUTPUT/"*.part* \
+            "$BUILD3_OUTPUT/ZIP_SHA256.txt" \
+            "$BUILD3_OUTPUT/PARTS_SHA256.txt" \
+            "$BUILD3_OUTPUT/WINDOWS_JOIN_FULL_FIRMWARE.ps1" \
+            "$BUILD3_OUTPUT/DOWNLOAD_INSTRUCTIONS.txt" \
+            "$BUILD3_OUTPUT/CHANGELOG.md" \
+            "$BUILD3_OUTPUT/FASTBOOT_VERIFICATION.json" \
+            "$BUILD3_OUTPUT/SUPER_VERIFICATION.json" \
+            --title "v.0.2 - HyperOS1 Yunluo" \
+            --notes-file "$BUILD3_OUTPUT/CHANGELOG.md" \
+            --target "$GITHUB_SHA" --prerelease
+          gh release view "v.0.2" --json url,assets --jq '{url: .url, assets: [.assets[].name]}'
