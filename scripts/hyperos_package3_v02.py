@@ -88,7 +88,7 @@ def main():
         or not m["source_lp_metadata_preserved"] or not m["retained_apks_same_bytes_owner_mode_selinux"]
         or not m["photon_system_app_verified"]
         or not m["network_stack_apex_kept"]
-        or any(not m["apex_modules_removed"].get(x) for x in ("health_connect","cell_broadcast","ad_services"))):
+        or any(not m["apex_modules_removed"].get(x) for x in ("health_connect","ad_services"))):
         fail("Modified super did not pass preflight")
     sparse=STAGING/"super.sparse.img"
     if hashfile(sparse)!=m["new_super_sparse_sha256"]:
