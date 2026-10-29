@@ -1,0 +1,91 @@
+name: HyperOS Build 1 - Stage 3 Complete APK Inventory
+
+# First execution starts on workflow creation; no firmware release or modifications.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/hyperos-stage3-apk-inventory.yml'
+      - 'stage3/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yunluo-hyperos-stage3-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  full-apk-inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 230
+    env:
+      HYPEROS_ARCHIVE: ${{ github.workspace }}/.hyperos-work/yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz
+      HYPEROS_REPORTS: ${{ github.workspace }}/reports-stage3
+      EXPECTED_MD5: f8dbb84a10dc96a9d3ce9e78883e87f3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight Python syntax, version, and safe read-only workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile workflow/hyperos/firmware.py workflow/hyperos/download.py \
+            workflow/hyperos/geometry.py workflow/hyperos/inventory.py stage3/scan.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"workflow/hyperos")
+          from firmware import VERSION, NAME, MD5, REGION, DEVICE
+          assert (DEVICE,REGION,VERSION)==("yunluo","Global MIXM","OS1.0.9.0.ULYMIXM")
+          assert NAME.endswith("_global_f8dbb84a10.tgz")
+          assert MD5=="f8dbb84a10dc96a9d3ce9e78883e87f3"
+          print("Verified Global MIXM Xiaomi stock archive identity")
+          PY
+      - name: Install verified Android partition tools and EROFS support
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates file python3 erofs-utils util-linux
+          python3 workflow/hyperos/inventory.py --install-tools
+          echo "Android SDK: $ANDROID_HOME"
+          find "$ANDROID_HOME/build-tools" -maxdepth 2 -name 'aapt*' | head -15
+          df -h "$RUNNER_TEMP"
+      - name: Download original HyperOS Global fastboot archive using proven fast CDN selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 workflow/hyperos/download.py \
+            --output "$HYPEROS_ARCHIVE" \
+            --report "$HYPEROS_REPORTS/download-sources.json"
+          echo "$EXPECTED_MD5  $HYPEROS_ARCHIVE" | md5sum -c -
+          sha256sum "$HYPEROS_ARCHIVE" | tee "$HYPEROS_REPORTS/stock-sha256.txt"
+          df -h "$RUNNER_TEMP"
+      - name: Inspect stock super and collect APK names, package IDs and exact paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=HYPEROS_ARCHIVE,HYPEROS_REPORTS,RUNNER_TEMP,ANDROID_HOME,GITHUB_STEP_SUMMARY \
+            python3 -u stage3/scan.py
+          python3 - <<'PY'
+          import csv,json,os,pathlib
+          out=pathlib.Path(os.environ["HYPEROS_REPORTS"])
+          m=json.loads((out/"APK_SUMMARY.json").read_text())
+          with (out/"APK_DETAILS.csv").open(newline="") as f:
+              data=list(csv.DictReader(f))
+          assert m["source_md5_verified"] and m["source_md5"]==os.environ["EXPECTED_MD5"]
+          assert m["partitions_scanned"]==m["partitions_expected"]==7
+          assert m["total_apk_files"]==len(data)>0
+          assert len({x["apk_location"] for x in data})==len(data)
+          assert not m["changes_to_firmware"]
+          assert all(x["partition"]+":" in x["apk_location"] for x in data)
+          print("Verified Stage 3 report:",len(data),"unique APK paths from 7 stock partitions")
+          PY
+      - name: Upload complete Stage 3 APK inventory and verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunluo-hyperos-build1-stage3-all-stock-apks
+          path: reports-stage3/
+          retention-days: 30
+          if-no-files-found: warn
