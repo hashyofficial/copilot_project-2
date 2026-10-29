@@ -1,0 +1,141 @@
+# HyperOS 1 Global Build 3 experimental / Redmi Pad yunluo / Release v.0.1
+# Base: verified booting Build 2 (117 packages selected); rebuild safely from pinned stock source.
+# Additional packages found in stock verified inventory: 7.
+# Build 3 removal = 124 distinct Android package IDs; 125 APKs (SIM Toolkit stock duplicate).
+# 106 dedicated app/overlay folders removed; 19 APKs in shared overlay dirs.
+# Also independently search system/apex for Health Connect modules; exclude ONLY matching exact Health Connect paths if actually present.
+# Photon Gallery v2.1.3 arm64-v8a from upstream, SHA256 8a5039b05b7a8b57adb16de006c80e0a37f92debda9d745d3e3c398a4d311fe1.
+# Added to product_a:/app/PhotonGallery/PhotonGallery.apk (Android /product/app/PhotonGallery).
+# This configuration does not remove shared unrelated GMS, System UI or Wi-Fi resource overlays.
+# Removed additionally vs Build 2:
+# [56] com.miui.msa.global — Xiaomi MSA ads
+# [126] com.android.providers.contacts — Contacts Storage / ContactsProvider
+# [245] com.android.overlay.gmscontactprovider — Google ContactsProvider overlay
+# [256] com.miui.systemui.carriers.overlay — MCC/MNC carrier UI overlay
+# [281] com.android.role.notes.enabled — Notes Role enabled overlay
+# [295] com.google.android.overlay.gmsconfig.contacts — Google GMS contacts overlay
+# [301] com.mediatek.cellbroadcastuiresoverlay — MediaTek carrier/cell-broadcast vendor overlay
+001 com.miui.analytics
+002 com.google.android.marvin.talkback
+006 com.miui.extraphoto
+007 com.xiaomi.barrage
+011 com.miui.cit
+016 com.google.android.configupdater
+017 com.google.android.apps.restore
+019 com.miui.qr
+020 com.google.android.apps.wellbeing
+022 com.google.android.apps.docs
+025 com.google.android.gms.supervision
+026 com.miui.bugreport
+029 com.miui.phrase
+030 com.miui.gallery
+031 com.miui.mediaeditor
+033 com.google.android.gm
+035 com.google.android.googlequicksearchbox
+036 com.android.hotwordenrollment.okgoogle
+037 com.android.hotwordenrollment.xgoogle
+038 com.google.android.syncadapters.calendar
+039 com.google.android.gms.location.history
+040 com.google.android.onetimeinitializer
+043 com.google.android.videos
+046 com.bsp.catchlog
+048 com.google.mainline.adservices
+049 com.google.android.apps.maps
+050 com.google.android.apps.tachyon
+051 com.xiaomi.aicr
+052 com.miui.creation
+056 com.miui.msa.global
+058 com.miui.notes
+060 android.autoinstalls.config.Xiaomi.model
+061 com.google.android.apps.safetyhub
+062 com.google.android.apps.photos
+063 com.android.soundrecorder
+064 com.xiaomi.scanner
+068 com.miui.miservice
+071 com.google.android.tts
+073 com.google.android.accessibility.switchaccess
+084 com.miui.weather2
+089 com.miui.mishare.connectivity
+090 com.google.android.youtube
+091 com.google.android.apps.youtube.music
+092 com.google.android.as
+093 com.google.android.apps.googleassistant
+094 com.google.android.calendar
+095 com.google.android.contacts
+096 com.google.android.apps.magazines
+097 com.google.android.apps.subscriptions.red
+098 com.google.android.apps.podcasts
+099 com.milink.service
+101 com.mi.globalbrowser
+102 com.xiaomi.payment
+103 cn.wps.xiaomi.abroad.lite
+104 com.xiaomi.smarthome
+105 com.miui.videoplayer
+107 com.android.egg
+110 com.android.backupconfirm
+111 com.android.dreams.basic
+113 com.android.providers.blockednumber
+114 com.android.bluetoothmidiservice
+115 com.android.bookmarkprovider
+118 com.android.calllogbackup
+121 com.android.simappdialog
+122 com.android.carrierdefaultapp
+123 com.android.cellbroadcastreceiver
+126 com.android.providers.contacts
+141 com.android.mms.service
+142 com.android.phone
+146 com.android.providers.telephony
+147 com.android.ons
+151 com.android.server.telecom
+152 com.google.android.printservice.recommendation
+158 com.android.stk
+160 com.android.bips
+162 com.android.apps.tag
+165 com.android.managedprovisioning
+166 com.modemdebug
+169 com.mediatek.atci.service
+170 com.mediatek.batterywarning
+173 com.mediatek.callrecorder
+174 com.android.carrierconfig
+175 com.debug.loggerui
+177 com.android.emergency
+178 com.mediatek.engineermode
+183 com.mediatek.ims
+184 com.mediatek.lbs.em2.ui
+185 com.mediatek.location.lppe.main
+186 com.google.android.feedback
+187 com.mediatek.mdmconfig
+188 com.mediatek.mdmlsample
+194 com.mediatek.location.mtkgeofence
+195 com.mediatek.gbaservice
+196 com.wdstechnology.android.kryten
+198 com.android.printspooler
+201 com.mediatek.capctrl.service
+203 com.xiaomi.mtb
+205 com.mediatek.smartratswitch.service
+210 com.mediatek.telephony
+211 com.miuix.editor
+212 com.mediatek.voicecommand
+213 com.mediatek.voiceunlock
+216 com.mediatek.ygps
+227 android.aosp.overlay.telephony
+243 com.google.android.overlay.gmsconfig.gsa
+244 com.google.android.overlay.gmsconfig.personalsafety
+245 com.android.overlay.gmscontactprovider
+253 com.miui.phone.carriers.overlay.h3g
+254 com.android.server.telecom.overlay.miui
+255 com.android.managedprovisioning.overlay
+256 com.miui.systemui.carriers.overlay
+257 com.google.android.cellbroadcastreceiver.overlay.miui
+258 com.google.android.cellbroadcastservice.overlay.miui
+263 android.miui.overlay.telephony
+267 com.android.phone.common.overlay.miui
+275 com.android.providers.telephony.overlay.miui
+276 com.android.phone.overlay.miui
+281 com.android.role.notes.enabled
+290 com.miui.phone.carriers.overlay.vodafone
+295 com.google.android.overlay.gmsconfig.contacts
+296 com.android.overlay.gmstelecomm
+297 com.android.overlay.gmstelephony
+298 com.android.stk.overlay.miui
+301 com.mediatek.cellbroadcastuiresoverlay
