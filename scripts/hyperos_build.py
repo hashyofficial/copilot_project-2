@@ -154,9 +154,9 @@ def build_one(raw,candidate,name,region,selected_ids,aapt):
         # Resource overlays typically live in one SHARED overlay directory, so
         # delete only selected APKs in these shared directories.
         roots={
-            ("app",),("priv-app",),
-            ("system","app"),("system","priv-app"),
-            ("product","app"),("product","priv-app"),
+            ("app",),("priv-app",),("data-app",),
+            ("system","app"),("system","priv-app"),("system","data-app"),
+            ("product","app"),("product","priv-app"),("product","data-app"),
             ("system_ext","app"),("system_ext","priv-app"),
             ("vendor","app"),("vendor","priv-app"),
             ("system","product","app"),("system","product","priv-app"),
