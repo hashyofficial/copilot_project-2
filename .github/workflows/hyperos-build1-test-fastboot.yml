@@ -79,8 +79,12 @@ jobs:
           assert sorted(meta["rebuilt_partitions"])==["mi_ext_a","product_a","system_a","system_ext_a"]
           assert meta["source_lp_metadata_preserved"]
           assert meta["retained_apks_same_bytes_owner_mode_selinux"]
+          assert meta["entire_app_folders_removed"]==90
+          assert meta["individual_shared_overlay_apks_removed"]==12
+          assert meta["all_selected_folder_paths_absent_after_rebuild"]
+          assert all(p["removed_paths_absent_after_rebuild"] for p in meta["partitions"])
           assert (private/"super.sparse.img").stat().st_size>100_000_000
-          print("Super rebuild passed: 101 packages, 102 APK files, 4 changed EROFS partitions")
+          print("Super rebuild passed: 90 COMPLETE app folders removed + 12 shared overlay APKs; original retained APKs verified")
           PY
       - name: Pack complete Xiaomi fastboot test ZIP; patch main vbmeta and CRC lists; validate and split
         shell: bash
@@ -94,6 +98,7 @@ jobs:
           m=json.loads((rep/"FASTBOOT_TEST_VERIFICATION.json").read_text())
           assert m["status"]=="offline_verified_NOT_device_boot_tested"
           assert m["removed_apk_count"]==102 and m["selected_package_count"]==101
+          assert m["entire_app_folders_removed"]==90 and m["individual_shared_overlay_apks_removed"]==12
           assert m["vbmeta_flags"]==3
           assert m["other_firmware_files_unchanged"]
           assert len(m["parts"])>=4
