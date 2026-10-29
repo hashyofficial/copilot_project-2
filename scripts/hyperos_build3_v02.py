@@ -31,7 +31,6 @@ PHOTON_LABEL=b"u:object_r:system_file:s0"
 # excluded ONLY when their .apex/.capex archive is verified on a stock partition.
 APEX_TARGETS={
     "health_connect":("com.google.android.healthfitness","com.android.healthfitness"),
-    "cell_broadcast":("com.google.android.cellbroadcast","com.android.cellbroadcast"),
     "ad_services":("com.google.android.adservices","com.android.adservices"),
 }
 APEX_SCAN_DIRS=("apex","system/apex","product/apex","system_ext/apex","vendor/apex","mi_ext/apex")
@@ -41,6 +40,7 @@ NETWORK_PROTECTED_APEX_PREFIXES=(
     "com.google.android.tethering","com.android.tethering",
     "com.google.android.ipsec","com.android.ipsec",
     "com.android.networkstack","com.google.android.networkstack",
+    "com.google.android.cellbroadcast","com.android.cellbroadcast",
 )
 REPORT=Path(os.environ["BUILD3_REPORTS"])
 STAGING=Path(os.environ["BUILD3_PRIVATE"])
@@ -221,7 +221,7 @@ def build_one(raw,candidate,name,region,selected_ids,aapt):
                     checked.append({"package_id":pkg,"source_apk":f"{name}:{rel}",
                                     "exclude":rel,"method":"single_apk_in_shared_dir"})
         # Match verified built-in APEX archives, not the /apex runtime mountpoint.
-        # This excludes the contained Health Connect controller and Cell Broadcast APKs
+        # This excludes the contained Health Connect controller and AdServices APKs
         # without guessing internal paths in Google's signed APEX payload.
         apex_removed={group:[] for group in APEX_TARGETS}
         retained_apex={}
@@ -378,7 +378,7 @@ def main():
         for name in sorted(PARTITIONS):
             print("Rebuilding HyperOS partition:",name,flush=True)
             reports.append(build_one(original,candidate,name,regions[name],expected,aapt))
-        # Refuse to silently publish when any requested modular package was not
+        # Refuse to silently publish when any supported requested modular package was not
         # found in the stock firmware. If all three are found, verify exact paths
         # were physically absent from the finished EROFS in each partition report.
         all_apex_paths={group:[] for group in APEX_TARGETS}
@@ -444,14 +444,14 @@ def main():
                   "photon_system_app_verified":True,
                   "photon_apk_sha256":PHOTON_SHA,
                   "warnings":["Experimental: core telephony packages removed",
-                              "Boot compatibility not guaranteed; Health, Cell Broadcast emergency alerts and AdServices APEX removed",
+                              "Boot compatibility not guaranteed; Health and AdServices APEX removed; Cell Broadcast APEX retained",
                                "Network Stack, Wi-Fi, DNS Resolver, tethering and IPsec APEX retained",
                                "Updated /data/apex modules may still be activated until separately handled",
                               "Full fastboot stock flashes may erase user data",
                               "Clean boot requires physical-device testing"]}
         (STAGING/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
         write("build3-super-verification.json",json.dumps(manifest,indent=2)+"\n")
-        write("status.txt",f"PASS: 124 selected packages, 3 targeted APEX modules; 106 complete app/overlay folders + 19 shared overlay APKs removed; {len(reports)} partitions rebuilt; source LP unchanged; {time.monotonic()-begin:.0f}s\n")
+        write("status.txt",f"PASS: 124 selected packages, 2 targeted APEX modules; 106 complete app/overlay folders + 19 shared overlay APKs removed; {len(reports)} partitions rebuilt; source LP unchanged; {time.monotonic()-begin:.0f}s\n")
         print("HyperOS Build 3 v.0.2 EROFS/APEX offline verified; release packaging is next",flush=True)
     except Exception as exc:
         write("status.txt",f"FAIL: {type(exc).__name__}: {exc}\n")
