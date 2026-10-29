@@ -82,6 +82,9 @@ def main():
     OUT.mkdir(parents=True,exist_ok=True)
     m=json.loads((STAGING/"manifest.json").read_text())
     if (m["source_md5"]!=MD5 or m["selected_package_count"]!=101 or m["removed_apk_count"]!=102
+        or m.get("entire_app_folders_removed")!=90
+        or m.get("individual_shared_overlay_apks_removed")!=12
+        or m.get("all_selected_folder_paths_absent_after_rebuild") is not True
         or not m["source_lp_metadata_preserved"] or not m["retained_apks_same_bytes_owner_mode_selinux"]):
         fail("Modified super did not pass preflight")
     sparse=STAGING/"super.sparse.img"
@@ -189,6 +192,9 @@ def main():
         report={"status":"offline_verified_NOT_device_boot_tested","device":"yunluo",
                 "rom":"HyperOS 1 Global","source_version":VERSION,
                 "source_md5":MD5,"selected_package_count":101,"removed_apk_count":102,
+                "entire_app_folders_removed":m["entire_app_folders_removed"],
+                "individual_shared_overlay_apks_removed":m["individual_shared_overlay_apks_removed"],
+                "all_selected_folder_paths_absent_after_rebuild":m["all_selected_folder_paths_absent_after_rebuild"],
                 "patched_main_vbmeta_sha256":hashlib.sha256(new_main).hexdigest(),
                 "vbmeta_flags":3,"vbmeta_signature_invalid_after_patch":True,
                 "other_firmware_files_unchanged":True,
