@@ -146,32 +146,67 @@ def build_one(raw,candidate,name,region,selected_ids,aapt):
         found=[(pkg,apk,rel) for pkg,apk,rel in all_apps if pkg in selected_ids]
         if not found:
             raise RuntimeError("Expected selected APKs in "+name)
-        # Avoid deleting shared overlay directories. Every directory exclusion must
-        # contain only selected APKs; otherwise exclude just the selected APK file.
-        by_parent={}
+        # Remove the ENTIRE directory for a dedicated app:
+        #   /app/<App>, /priv-app/<App>, /system/app/<App>,
+        #   /system/priv-app/<App>, /product/app/<App>,
+        #   /product/priv-app/<App>, /system_ext/app/<App>, etc.
+        # These directories contain owned native libs/oat/artifacts alongside APKs.
+        # Resource overlays typically live in one SHARED overlay directory, so
+        # delete only selected APKs in these shared directories.
+        roots={
+            ("app",),("priv-app",),
+            ("system","app"),("system","priv-app"),
+            ("product","app"),("product","priv-app"),
+            ("system_ext","app"),("system_ext","priv-app"),
+            ("vendor","app"),("vendor","priv-app"),
+            ("system","product","app"),("system","product","priv-app"),
+            ("system","system_ext","app"),("system","system_ext","priv-app"),
+        }
+        apps_by_folder={}
         for pkg,apk,rel in all_apps:
-            by_parent.setdefault(apk.parent,[]).append(pkg)
+            apps_by_folder.setdefault(apk.parent,[]).append(pkg)
+        selected_by_folder={}
+        for pkg,apk,rel in found:
+            selected_by_folder.setdefault(apk.parent,[]).append((pkg,apk,rel))
         exclusions=[]
         checked=[]
-        seen=set()
-        for pkg,apk,rel in found:
-            parent=apk.parent
-            same=by_parent[parent]
-            owned=(len(same)==1 and same[0]==pkg and
-                   parent.relative_to(mnt).parts[0] not in ("overlay","product")
-                   and len(parent.relative_to(mnt).parts)>=2)
-            # /product/app/<app> is safe; /product/overlay (shared) is not.
-            if parent.relative_to(mnt).parts[:2] in (("product","app"),("product","priv-app")):
-                owned=len(same)==1 and len(parent.relative_to(mnt).parts)>=3
-            # /system/app/<app> or /app/<app>, etc. The parent must not be
-            # a shared package container with another APK.
-            if len(parent.relative_to(mnt).parts)<2:
-                owned=False
-            removal="/"+parent.relative_to(mnt).as_posix() if owned else rel
-            if removal in seen:raise RuntimeError("Duplicated exclusion "+removal)
-            seen.add(removal);exclusions.append(removal)
-            checked.append({"package_id":pkg,"source_apk":f"{name}:{rel}",
-                            "exclude":removal,"method":"folder" if owned else "file"})
+        deleted_folders=[]
+        deleted_individual_apks=[]
+        for parent,items in sorted(selected_by_folder.items(),key=lambda kv:str(kv[0])):
+            relative=parent.relative_to(mnt)
+            parts=relative.parts
+            dedicated=(
+                len(parts)>=2 and
+                any(parts[:len(root)]==root and len(parts)>len(root) for root in roots)
+            )
+            # Prevent accidentally removing a shared folder that still contains
+            # an APK with a package ID not chosen by the user.
+            all_ids=set(apps_by_folder[parent])
+            requested_ids={pkg for pkg,_,_ in items}
+            if dedicated and not all_ids.issubset(requested_ids):
+                raise RuntimeError("Selected app folder contains unselected APKs: "+str(parent))
+            # Folder exclusion is safe only for a dedicated app directory; a
+            # shared /overlay directory must be preserved for retained overlays.
+            if dedicated:
+                exclusion="/"+relative.as_posix()
+                exclusions.append(exclusion)
+                deleted_folders.append(exclusion)
+                for pkg,apk,rel in items:
+                    checked.append({"package_id":pkg,"source_apk":f"{name}:{rel}",
+                                    "exclude":exclusion,"method":"whole_folder"})
+            else:
+                for pkg,apk,rel in items:
+                    exclusions.append(rel)
+                    deleted_individual_apks.append(rel)
+                    checked.append({"package_id":pkg,"source_apk":f"{name}:{rel}",
+                                    "exclude":rel,"method":"single_apk_in_shared_dir"})
+        if len(exclusions)!=len(set(exclusions)):
+            raise RuntimeError("Duplicate EROFS exclusion path")
+        if any(x in ("/","/app","/priv-app","/overlay","/product/overlay",
+                     "/system/app","/system/priv-app","/product/app",
+                     "/product/priv-app","/system_ext/app","/system_ext/priv-app")
+               for x in exclusions):
+            raise RuntimeError("Attempted to remove a shared system folder")
         # Verify all unselected APKs stay present after rebuild.
         retained={rel:(pkg,file_fingerprint(apk)) for pkg,apk,rel in all_apps if pkg not in selected_ids}
         retained_count=len(retained)
@@ -188,6 +223,12 @@ def build_one(raw,candidate,name,region,selected_ids,aapt):
         verified=WORK/("verify-"+name);verified.mkdir()
         run("mount","-t","erofs","-o","ro,loop",built,verified)
         try:
+            # Check exclusion targets directly on the finished EROFS mount:
+            # an APK-only scan would NOT prove that the original app folder's
+            # lib/, oat/, and other companion files were actually removed.
+            remnants=[str(p) for p in exclusions if (verified/p.lstrip("/")).exists()]
+            if remnants:
+                raise RuntimeError("Removed folder/APK path still present: "+str(remnants[:20]))
             changed=scan_apks(verified,aapt)
             after={rel:(pkg,file_fingerprint(apk)) for pkg,apk,rel in changed}
             unexpected=sorted(set(after)-set(retained))
@@ -206,6 +247,11 @@ def build_one(raw,candidate,name,region,selected_ids,aapt):
         wipe_segment(candidate,start,cap,built)
         return {"partition":name,"source_bytes":cap,"new_erofs_bytes":built.stat().st_size,
                 "selected_apks":len(checked),"retained_apks":retained_count,
+                "whole_app_folders_removed":len(deleted_folders),
+                "individual_shared_overlay_apks_removed":len(deleted_individual_apks),
+                "removed_app_folders":deleted_folders,
+                "removed_shared_overlay_apks":deleted_individual_apks,
+                "removed_paths_absent_after_rebuild":True,
                 "excluded":checked,"rebuild_uuid":uuid,
                 "retained_apks_verified":True}
     finally:
@@ -235,6 +281,11 @@ def main():
             print("Rebuilding HyperOS partition:",name,flush=True)
             reports.append(build_one(original,candidate,name,regions[name],expected,aapt))
         observed=[x["package_id"] for p in reports for x in p["excluded"]]
+        folders_removed=sum(p["whole_app_folders_removed"] for p in reports)
+        shared_overlays_removed=sum(p["individual_shared_overlay_apks_removed"] for p in reports)
+        print(f"Verified whole-app-folder deletions: {folders_removed}; exact shared-overlay APK removals: {shared_overlays_removed}",flush=True)
+        if folders_removed!=90 or shared_overlays_removed!=12:
+            raise RuntimeError(f"Expected 90 entire app folders plus 12 shared overlay APKs; got {folders_removed} + {shared_overlays_removed}")
         if len(observed)!=102 or set(observed)!=set(expected) or len(observed)-len(set(observed))!=1:
             raise RuntimeError("Removal mapping mismatch: expected 101 packages, 102 APKs")
         modified=set(PARTITIONS)
@@ -266,6 +317,9 @@ def main():
                   "source_raw_super_size":RAW_BYTES,
                   "selected_package_ids":sorted(expected),
                   "selected_package_count":101,"removed_apk_count":102,
+                  "entire_app_folders_removed":folders_removed,
+                  "individual_shared_overlay_apks_removed":shared_overlays_removed,
+                  "all_selected_folder_paths_absent_after_rebuild":True,
                   "rebuilt_partitions":sorted(PARTITIONS),"source_lp_metadata_preserved":True,
                   "retained_apks_same_bytes_owner_mode_selinux":True,
                   "other_lp_regions_unchanged":True,
@@ -276,7 +330,7 @@ def main():
                               "Clean boot requires physical-device testing"]}
         (STAGING/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n")
         write("build1-super-verification.json",json.dumps(manifest,indent=2)+"\n")
-        write("status.txt",f"PASS: 101 selected packages; 102 APKs removed; {len(reports)} partitions rebuilt; source LP unchanged; {time.monotonic()-begin:.0f}s\n")
+        write("status.txt",f"PASS: 101 selected packages; 90 complete app folders + 12 shared overlay APKs removed; {len(reports)} partitions rebuilt; source LP unchanged; {time.monotonic()-begin:.0f}s\n")
         print("HyperOS Stage 4 super image offline checked; test packaging is next",flush=True)
     except Exception as exc:
         write("status.txt",f"FAIL: {type(exc).__name__}: {exc}\n")
