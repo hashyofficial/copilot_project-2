@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""EXPERIMENTAL HyperOS 1 yunluo Build 3: 113 user selections and 4 related overlays removed.
+"""EXPERIMENTAL HyperOS 1 yunluo Build 3: 124 selected APK packages plus optional Health Connect APEX removal.
 
 Read only the pinned, MD5-verified Xiaomi Global stock. Preserve LP metadata,
 unmodified EROFS images, retained APK checksums and labels. Rebuild only affected
 EROFS partitions, using verified first-party partition offsets (not MIUI offsets).
-No vbmeta/ZIP/release here; packaging is separate and requires full validation.
+No vbmeta/ZIP/release here; packaging/release is separate and requires full validation.
 """
 import csv
 import hashlib
@@ -211,7 +211,7 @@ def build_one(raw,candidate,name,region,selected_ids,aapt):
             for apex_root in (mnt/"system/apex",mnt/"apex"):
                 if not apex_root.is_dir():continue
                 for path in apex_root.iterdir():
-                    if re.fullmatch(r"(?i)(?:com\\.(?:google\\.)?android\\.)?healthconnect(?:[-_.].*)?",path.name):
+                    if re.fullmatch(r"(?i)(?:com\.(?:google\.)?android\.)?healthconnect(?:[-_.].*)?",path.name):
                         rel="/"+path.relative_to(mnt).as_posix()
                         health_paths.append(rel)
                         exclusions.append(rel)
