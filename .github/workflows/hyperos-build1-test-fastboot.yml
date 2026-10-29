@@ -99,6 +99,7 @@ jobs:
           assert m["status"]=="offline_verified_NOT_device_boot_tested"
           assert m["removed_apk_count"]==102 and m["selected_package_count"]==101
           assert m["entire_app_folders_removed"]==90 and m["individual_shared_overlay_apks_removed"]==12
+          assert m["all_selected_folder_paths_absent_after_rebuild"]
           assert m["vbmeta_flags"]==3
           assert m["other_firmware_files_unchanged"]
           assert len(m["parts"])>=4
