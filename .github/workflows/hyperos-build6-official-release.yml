@@ -1,0 +1,280 @@
+name: HyperOS1 Yunluo Build 6 - Official Custom ROM Release v1.2.0
+
+# Only this workflow creation triggers the actual build. Keep stock and earlier
+# experimental workflows untouched. Distribution is GitHub Release ONLY.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/hyperos-build6-official-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hyperos-build6-official-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-verify-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      HYPEROS_ARCHIVE: ${{ github.workspace }}/.hyperos-work/stock/yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz
+      HYPEROS_REPORTS: ${{ github.workspace }}/.hyperos-work/reports
+      BUILD6_REPORTS: ${{ github.workspace }}/.hyperos-work/reports
+      BUILD6_PRIVATE: ${{ github.workspace }}/.hyperos-work/private
+      BUILD6_OUTPUT: ${{ github.workspace }}/.hyperos-work/release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate exact 53-package removal selection and protected Android components
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile workflow/hyperos/*.py scripts/hyperos_build6.py scripts/hyperos_package6.py stage3/scan.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"scripts")
+          from hyperos_build6 import selected, PROTECT, ADDON_PATHS
+          from hyperos_build5 import selected as original_selection
+          x=selected(); old=original_selection()
+          assert len(old)==48 and len(x)==53
+          assert set(x)==set(old)|set(ADDON_PATHS)
+          assert all(x[k]==old[k] for k in old)
+          assert not set(x).intersection(PROTECT)
+          expected={
+              "com.google.android.apps.safetyhub":61,
+              "com.google.android.printservice.recommendation":152,
+              "com.google.android.feedback":186,
+              "com.bsp.catchlog":46,
+              "com.android.dreams.basic":111,
+              "com.miui.miservice":68,
+              "com.xiaomi.payment":102,
+              "cn.wps.xiaomi.abroad.lite":103,
+              "com.android.apps.tag":162,
+              "com.miui.weather2":330,
+              "com.xiaomi.smarthome":331,
+              "com.miui.creation":332,
+              "com.android.soundrecorder":333,
+              "com.xiaomi.scanner":334,
+          }
+          for pkg,number in expected.items():
+              assert x[pkg]==number,(pkg,x.get(pkg))
+          essential={
+              "com.google.android.gm","com.google.android.calendar",
+              "com.google.android.contacts","com.google.android.as",
+              "com.google.android.as.oss","com.google.android.overlay.gmsconfig.asi",
+              "com.google.android.syncadapters.calendar","com.miui.gallery",
+              "com.miui.securitycenter","com.miui.cleaner","com.android.phone",
+              "com.android.providers.contacts","com.google.android.gms",
+              "com.miui.home","com.miui.screenrecorder","com.mediatek.callrecorder",
+          }
+          assert not essential.intersection(x)
+          assert "com.google.android.projection.gearhead" not in x
+          print("PASS: 53 unique user-approved stock APK IDs; retained Gmail, Calendar, Contacts, Intelligence, Private Compute, Gallery, Networking and APEX")
+          PY
+          mkdir -p "$BUILD6_REPORTS" "$BUILD6_PRIVATE" "$BUILD6_OUTPUT" "$(dirname "$HYPEROS_ARCHIVE")"
+
+      - name: Install pinned Android image tools and EROFS utilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates attr erofs-utils file python3 util-linux
+          python3 workflow/hyperos/inventory.py --install-tools
+          test -x .tools/android-tools-static/lpunpack
+          find "$ANDROID_HOME/build-tools" -maxdepth 2 -name aapt2 | head
+          df -h "$RUNNER_TEMP"
+
+      - name: Download original checksum-verified Xiaomi HyperOS 1 Global stock firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 workflow/hyperos/download.py --output "$HYPEROS_ARCHIVE" --report "$BUILD6_REPORTS/download-sources.json"
+          echo "f8dbb84a10dc96a9d3ce9e78883e87f3  $HYPEROS_ARCHIVE" | md5sum -c -
+          sha256sum "$HYPEROS_ARCHIVE" | tee "$BUILD6_REPORTS/source-archive-sha256.txt"
+
+      - name: Rebuild only affected EROFS images, delete whole app directories and audit all app-owned libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=HYPEROS_ARCHIVE,HYPEROS_REPORTS,BUILD6_REPORTS,BUILD6_PRIVATE,RUNNER_TEMP,ANDROID_HOME \
+            python3 -u scripts/hyperos_build6.py
+          sudo chown -R "$(id -u):$(id -g)" "$BUILD6_REPORTS" "$BUILD6_PRIVATE"
+          python3 - <<'PY'
+          import os,json,pathlib
+          private=pathlib.Path(os.environ["BUILD6_PRIVATE"])
+          reports=pathlib.Path(os.environ["BUILD6_REPORTS"])
+          m=json.loads((private/"manifest.json").read_text())
+          assert m["selected_package_count"]==53 and m["removed_apk_count"]==53
+          assert m["entire_app_folders_removed"]==51
+          assert m["additional_app_folders_recursively_removed"]==5
+          assert len(m["additional_stock_apps_removed"])==5 and m["netflix_is_user_data_not_stock_super"]
+          assert m["individual_shared_overlay_apks_removed"]==2
+          assert m["all_selected_folder_paths_absent_after_rebuild"]
+          assert sorted(m["rebuilt_partitions"])==["mi_ext_a","product_a","system_a","system_ext_a"]
+          assert m["source_lp_metadata_preserved"] and m["retained_apks_same_bytes_owner_mode_selinux"]
+          assert m["other_lp_regions_unchanged"]
+          assert m["owned_file_count_removed"]>=51
+          assert all(p["removed_paths_absent_after_rebuild"] and p["removed_folder_contents_audited"] for p in m["partitions"])
+          assert (private/"super.sparse.img").stat().st_size>100_000_000
+          for partition in m["rebuilt_partitions"]:
+              audit=json.loads((reports/("removed-folders-content-"+partition+".json")).read_text())
+              assert audit["whole_directories_deleted"]==next(p["whole_app_folders_removed"] for p in m["partitions"] if p["partition"]==partition)
+              assert audit["app_owned_file_count"]>=audit["whole_directories_deleted"]
+          print("PASS: 51 entire app folders plus all their app-owned files/libraries removed; 2 shared overlays removed individually")
+          print("Audited total app-owned files:",m["owned_file_count_removed"])
+          print("Audited app-owned JNI/native libraries:",m["owned_native_libraries_removed"])
+          print("Audited app-owned compiled-code files:",m["owned_compiled_files_removed"])
+          PY
+
+      - name: Package and validate COMPLETE fastboot ZIP, vbmeta, Xiaomi CRC and segment SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u scripts/hyperos_package6.py
+          python3 - <<'PY'
+          import os,pathlib,json,hashlib
+          out=pathlib.Path(os.environ["BUILD6_OUTPUT"])
+          rep=pathlib.Path(os.environ["BUILD6_REPORTS"])
+          v=json.loads((rep/"FASTBOOT_TEST_VERIFICATION.json").read_text())
+          assert v["status"]=="offline_verified_NOT_device_boot_tested"
+          assert v["exact_archived_super_crc_recheck"] and v["exact_archived_super_sha256_recheck"]
+          assert v["first_super_sparse_crc"].startswith("0x")
+          hashes={}
+          for line in (out/"FASTBOOT_IMAGE_SHA256.txt").read_text().splitlines():
+              sha,path=line.split("  ",1)
+              assert len(sha)==64 and path not in hashes
+              hashes[path]=sha
+          expected_sha=json.loads((pathlib.Path(os.environ["BUILD6_PRIVATE"])/"manifest.json").read_text())["new_super_sparse_sha256"]
+          assert hashes==dict(hashes) and len(hashes)==5
+          assert hashes["images/super.img"]==expected_sha
+          assert hashes["images/vbmeta.img"]==v["patched_main_vbmeta_sha256"]
+          assert hashes["flash_all.bat"]==v["original_flash_all_bat_sha256"]
+          assert (out/"VERIFY_BUILD6_FASTBOOT.ps1").is_file()
+          assert v["release_target"]=="v1.2.0"
+          assert v["selected_package_count"]==53 and v["removed_apk_count"]==53
+          assert v["entire_app_folders_removed"]==51 and v["individual_shared_overlay_apks_removed"]==2
+          assert v["netflix_is_user_data_not_stock_super"] and len(v["additional_stock_app_folders_removed"])==5
+          assert v["vbmeta_flags"]==3 and v["flash_scripts_preserved"]
+          assert v["other_firmware_files_unchanged"] and v["all_selected_folder_paths_absent_after_rebuild"]
+          assert v["owned_file_count_removed"]>=51 and v["stock_system_apex_unchanged"]
+          assert len(v["parts"])>=2
+          assert sum(p["bytes"] for p in v["parts"])==v["full_zip_bytes"]
+          for p in v["parts"]:
+              assert p["bytes"]<2_000_000_000
+              path=out/p["filename"]
+              assert path.exists() and path.stat().st_size==p["bytes"]
+              h=hashlib.sha256()
+              with path.open("rb") as f:
+                  for b in iter(lambda:f.read(8*1024*1024),b""):h.update(b)
+              assert h.hexdigest()==p["sha256"]
+          print("PASS: Full Xiaomi fastboot ZIP tested and SHA256-matched, original flash scripts verified; GitHub Release chunks checked")
+          PY
+
+      - name: Include complete removal, native-library audit and user-facing changelog in release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp release/HyperOS1-Yunluo-Build6-Final-v1.2.0-CHANGELOG.md "$BUILD6_OUTPUT/CHANGELOG.md"
+          cp config/hyperos-build6-final-selected.txt "$BUILD6_OUTPUT/REMOVAL_LIST_53_PACKAGES.txt"
+          cp "$BUILD6_REPORTS/FASTBOOT_TEST_VERIFICATION.json" "$BUILD6_OUTPUT/FASTBOOT_VERIFICATION.json"
+          cp "$BUILD6_REPORTS/build6-super-verification.json" "$BUILD6_OUTPUT/SUPER_VERIFICATION.json"
+          cp scripts/REMOVE_NETFLIX_USER_APP.ps1 "$BUILD6_OUTPUT/REMOVE_NETFLIX_USER_APP.ps1"
+          python3 - <<'PY'
+          import os,json,pathlib,zipfile
+          report=pathlib.Path(os.environ["BUILD6_REPORTS"])
+          dest=pathlib.Path(os.environ["BUILD6_OUTPUT"])
+          with zipfile.ZipFile(dest/"APP_FOLDER_AND_LIBRARIES_AUDIT.zip","w",zipfile.ZIP_DEFLATED,compresslevel=6) as z:
+              audits=sorted(report.glob("removed-folders-content-*.json"))
+              if len(audits)!=4:raise RuntimeError("Missing one or more app file content audits")
+              for audit in audits:z.write(audit,audit.name)
+          v=json.loads((dest/"FASTBOOT_VERIFICATION.json").read_text())
+          with (dest/"CHANGELOG.md").open("a",encoding="utf-8") as f:
+              f.write("\n## Verified built-image folder/library audit\n\n")
+              f.write(f"- Recursively removed app-owned files: {v['owned_file_count_removed']}\n")
+              f.write(f"- App-owned native libraries inside removed folders: {v['owned_native_libraries_removed']}\n")
+              f.write(f"- App-owned compiled code files inside removed folders: {v['owned_compiled_files_removed']}\n")
+              f.write("- External shared libraries have not been deleted without exclusive-ownership proof.\n")
+          print("Final removal and native library audit ZIP created")
+          PY
+
+      - name: Upload complete firmware assets to draft GitHub Release v1.2.0
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create v1.2.0 \
+            "$BUILD6_OUTPUT/"*.part* \
+            "$BUILD6_OUTPUT/ZIP_SHA256.txt" \
+            "$BUILD6_OUTPUT/PARTS_SHA256.txt" \
+            "$BUILD6_OUTPUT/WINDOWS_JOIN_FULL_FIRMWARE.ps1" \
+            "$BUILD6_OUTPUT/FASTBOOT_IMAGE_SHA256.txt" \
+            "$BUILD6_OUTPUT/VERIFY_BUILD6_FASTBOOT.ps1" \
+            "$BUILD6_OUTPUT/REMOVE_NETFLIX_USER_APP.ps1" \
+            "$BUILD6_OUTPUT/DOWNLOAD_INSTRUCTIONS.txt" \
+            "$BUILD6_OUTPUT/CHANGELOG.md" \
+            "$BUILD6_OUTPUT/REMOVAL_LIST_53_PACKAGES.txt" \
+            "$BUILD6_OUTPUT/APP_FOLDER_AND_LIBRARIES_AUDIT.zip" \
+            "$BUILD6_OUTPUT/FASTBOOT_VERIFICATION.json" \
+            "$BUILD6_OUTPUT/SUPER_VERIFICATION.json" \
+            --title "HyperOS1 Yunluo Build 6 Official - v1.2.0" \
+            --notes-file "$BUILD6_OUTPUT/CHANGELOG.md" \
+            --target "$GITHUB_SHA" --draft
+          # Draft releases cannot be fetched reliably by /releases/tags/<tag>!
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$BUILD6_REPORTS/releases-staged.json"
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          report=pathlib.Path(os.environ["BUILD6_REPORTS"])
+          out=pathlib.Path(os.environ["BUILD6_OUTPUT"])
+          ls=json.loads((report/"releases-staged.json").read_text())
+          matched=[r for r in ls if r["tag_name"]=="v1.2.0" and r["draft"] and r["target_commitish"]==os.environ["GITHUB_SHA"]]
+          if len(matched)!=1:raise RuntimeError("Unable to locate exact new draft release by tag+commit")
+          release=matched[0]
+          actual={a["name"]:(a["size"],a.get("digest")) for a in release["assets"]}
+          expected={}
+          for p in out.iterdir():
+              if not p.is_file():continue
+              h=hashlib.sha256()
+              with p.open("rb") as fp:
+                  for chunk in iter(lambda:fp.read(8*1024*1024),b""):h.update(chunk)
+              expected[p.name]=(p.stat().st_size,"sha256:"+h.hexdigest())
+          if expected!=actual:
+              raise RuntimeError("Uploaded asset size/digest mismatch. Not deleting Build4. Missing="+str(set(expected)-set(actual))+" extra="+str(set(actual)-set(expected))+" differing="+str([k for k in expected.keys()&actual.keys() if expected[k]!=actual[k]]))
+          assert len([n for n in expected if ".zip.part" in n])>=2
+          assert {"FASTBOOT_IMAGE_SHA256.txt","VERIFY_BUILD6_FASTBOOT.ps1","REMOVE_NETFLIX_USER_APP.ps1","REMOVAL_LIST_53_PACKAGES.txt","ZIP_SHA256.txt","PARTS_SHA256.txt"}.issubset(expected)
+          (report/"build6-release-id.txt").write_text(str(release["id"])+"\n")
+          assert len(expected)>=15
+          print("PASS uploaded final Build6 and server-confirmed SHA256 of",len(expected),"assets. New draft ID",release["id"])
+          PY
+
+      - name: Preserve the boot-tested Build 5 fallback and independent stock DLKM release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view v1.1.0 --json isDraft,isPrerelease --jq '(.isDraft == false) and (.isPrerelease == false)' | grep -Fx true
+          gh release view hyperos1-yunluo-stock-dlkm-images --json isDraft --jq '.isDraft == false' | grep -Fx true
+          echo "PASS: Build5 fallback and stock DLKM separate release remain published"
+
+      - name: Publish Build 6 v1.2.0 as non-prerelease official custom project Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ID="$(cat "$BUILD6_REPORTS/build6-release-id.txt")"
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -F prerelease=false > "$BUILD6_REPORTS/published-release.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          rep=pathlib.Path(os.environ["BUILD6_REPORTS"])
+          d=json.loads((rep/"published-release.json").read_text())
+          assert d["id"]==int((rep/"build6-release-id.txt").read_text())
+          assert d["tag_name"]=="v1.2.0" and not d["draft"] and not d["prerelease"]
+          assert len(d["assets"])>=15
+          print("SUCCESS: HyperOS1 Yunluo Build6 FINAL v1.2.0 published:",d["html_url"])
+          PY
+          gh release view v1.2.0 --json url,name,assets,isDraft,isPrerelease --jq '{url,name,isDraft,isPrerelease,files:[.assets[].name]}'
