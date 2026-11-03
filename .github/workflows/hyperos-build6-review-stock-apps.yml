@@ -1,0 +1,39 @@
+name: Validate Build6 additional package IDs and exact APK directories (stock inventory)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/hyperos-build6-review-stock-apps.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retrieve verified original APK inventory (no firmware download)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p original-inventory
+          gh run download 40794158139 -n yunluo-hyperos-build1-stage3-all-stock-apks -D original-inventory
+          python3 - <<'PY'
+          import csv,glob,os,json
+          files=glob.glob('original-inventory/**/APK_DETAILS.csv',recursive=True)
+          assert len(files)==1,files
+          rows=list(csv.DictReader(open(files[0],newline='',encoding='utf-8')))
+          assert len(rows)==336
+          needles=("netflix","weather","smarthome","canvas","creation","recorder","scanner","mihome","miui.home")
+          matches=[]
+          for row in rows:
+              hay=" ".join(str(v) for v in row.values()).lower()
+              if any(term in hay for term in needles):
+                  matches.append({k:row.get(k) for k in ["partition","apk_location","application_folder","android_package_id","application_label","version_name","bytes"]})
+          print("REVIEW_STOCK_APPS_START")
+          print(json.dumps(matches,indent=2,ensure_ascii=False))
+          print("REVIEW_STOCK_APPS_END")
+          open("build6-stock-targets.json","w").write(json.dumps(matches,indent=2))
+          PY
