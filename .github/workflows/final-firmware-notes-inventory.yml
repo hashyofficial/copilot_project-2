@@ -1,0 +1,33 @@
+name: Final Build 1 - inspect Notes source package and partition before rebuild
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/final-firmware-notes-inventory.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  notes-stock-inspection:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect verified HyperOS1 Stage3 package inventory for Notes
+        run: |
+          set -euo pipefail
+          mkdir -p stock
+          gh run download 40794158139 -n yunluo-hyperos-build1-stage3-all-stock-apks -D stock
+          python3 - <<'PY'
+          import csv,glob,json
+          paths=glob.glob('stock/**/APK_DETAILS.csv',recursive=True)
+          assert len(paths)==1,paths
+          rows=list(csv.DictReader(open(paths[0],encoding="utf-8",newline="")))
+          selected=[{k:r.get(k) for k in ("partition","apk_location","application_folder","android_package_id","application_label","version_name","bytes")}
+                    for r in rows if "note" in (" ".join(str(v) for v in r.values())).lower()]
+          print("NOTES_STOCK_JSON_BEGIN")
+          print(json.dumps(selected,indent=2))
+          print("NOTES_STOCK_JSON_END")
+          assert selected,"No notes-related package found; investigate source"
+          PY
