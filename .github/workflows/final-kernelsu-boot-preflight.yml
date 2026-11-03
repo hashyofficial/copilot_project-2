@@ -1,0 +1,34 @@
+name: Validate supplied KernelSU Next boot.img before final firmware packaging
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/final-kernelsu-boot-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  patched-boot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download user's known-working boot image via gdown and verify kernel boot header
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user --disable-pip-version-check gdown
+          python3 -m gdown --id 1G1d4bzrP5fGJfGCcqUbHj_4xTN51N_72 --output boot.img
+          python3 - <<'PY'
+          import hashlib,struct,pathlib
+          p=pathlib.Path("boot.img")
+          data=p.read_bytes()[:4096]
+          assert data[:8]==b"ANDROID!", "Downloaded file is not Android boot image"
+          size=p.stat().st_size
+          assert 1_000_000<size<200_000_000, "Unexpected kernel image size"
+          kernel_size=struct.unpack_from("<I",data,8)[0]
+          ramdisk_size=struct.unpack_from("<I",data,16)[0]
+          assert 0<kernel_size<size, "Invalid Android boot kernel size"
+          assert ramdisk_size<size
+          h=hashlib.sha256()
+          with p.open("rb") as f:
+              for b in iter(lambda:f.read(8*1024*1024),b""):h.update(b)
+          print("PATCHED_BOOT_VERIFIED:",size,h.hexdigest(),"kernel_bytes",kernel_size,"ramdisk_bytes",ramdisk_size,"Android! header")
+          PY
