@@ -124,7 +124,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo --preserve-env=HYPEROS_ARCHIVE,HYPEROS_REPORTS,FINAL_REPORTS,FINAL_PRIVATE,RUNNER_TEMP,ANDROID_HOME \
-            python3 -u scripts/hyperos_final_firmware.py
+            python3 -u scripts/final_firmware_build.py
           sudo chown -R "$(id -u):$(id -g)" "$FINAL_REPORTS" "$FINAL_PRIVATE"
           python3 - <<'PY'
           import os,json,pathlib
@@ -157,7 +157,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -u scripts/hyperos_package6.py
+          python3 -u scripts/final_firmware_package.py
           python3 - <<'PY'
           import os,pathlib,json,hashlib
           out=pathlib.Path(os.environ["FINAL_OUTPUT"])
@@ -207,7 +207,7 @@ jobs:
           cp release/FINAL_FIRMWARE_CHANGELOG.md "$FINAL_OUTPUT/CHANGELOG.md"
           cp config/hyperos-final-firmware-selected.txt "$FINAL_OUTPUT/REMOVAL_LIST_54_PACKAGES.txt"
           cp "$FINAL_REPORTS/FASTBOOT_TEST_VERIFICATION.json" "$FINAL_OUTPUT/FASTBOOT_VERIFICATION.json"
-          cp "$FINAL_REPORTS/final_firmware-super-verification.json" "$FINAL_OUTPUT/SUPER_VERIFICATION.json"
+          cp "$FINAL_REPORTS/final_build-super-verification.json" "$FINAL_OUTPUT/SUPER_VERIFICATION.json"
           cp scripts/REMOVE_NETFLIX_USER_APP.ps1 "$FINAL_OUTPUT/REMOVE_NETFLIX_USER_APP.ps1"
           cp scripts/ONE_CLICK_DOWNLOAD_AND_EXTRACT.ps1 "$FINAL_OUTPUT/ONE_CLICK_DOWNLOAD_AND_EXTRACT.ps1"
           python3 - <<'PY'
@@ -301,7 +301,7 @@ jobs:
       - name: Delete all older GitHub Releases and their tags after verified final publication
         shell: bash
         env:
-          GH_TOKEN: \${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$FINAL_REPORTS/releases-before-cleanup.json"
@@ -317,7 +317,7 @@ jobs:
           print("Deleting old Release count",len(old))
           PY
           while IFS=$'\t' read -r OLDID OLDTAG; do
-            if [ -z "\${OLDID:-}" ]; then continue; fi
+            if [ -z "${OLDID:-}" ]; then continue; fi
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$OLDID" >/dev/null
             if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$OLDTAG" >/dev/null 2>&1; then
               gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$OLDTAG" >/dev/null
