@@ -1,0 +1,122 @@
+name: HyperOS1 Yunluo - Recover verified Build4 v1.0.0 Release
+
+# The complete firmware build PASSED in run 41584191211, but the original
+# publication step incorrectly queried a DRAFT by tag (GitHub returns 404).
+# Recover *the same already-uploaded, SHA256-verifiable draft release* without
+# rebuilding original 5.1-GB firmware or modifying the 48-app configuration.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/hyperos-build4-publish-recovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: yunluo-build4-release-publication
+  cancel-in-progress: false
+
+jobs:
+  validate-and-publish-existing-draft:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read existing verified draft by numeric Release ID, not draft tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/432317697" > draft-release.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/jobs/125745745536" > original-build-job.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path("draft-release.json").read_text())
+          job=json.loads(Path("original-build-job.json").read_text())
+          assert r["id"]==432317697 and r["draft"] is True and r["tag_name"]=="v1.0.0"
+          assert r["target_commitish"]=="af02178ec9c7ef4494e2d2878cf22bb47bdb9137"
+          assert r["name"]=="HyperOS1 Yunluo - Build 4 Official (v1.0.0)"
+          expected={name: (size, "sha256:"+digest) for name,size,digest in [["APP_FOLDER_AND_LIBRARIES_AUDIT.zip",4376,"44478acaaeb916ceabc64954851fbcdc483eb1bfcbdbb2733043c1306baed9b7"],["CHANGELOG.md",6226,"6a54c0d331207f11baf2f8ade41a350c1015ddea86a0aef7cac19173252d5b4a"],["DOWNLOAD_INSTRUCTIONS.txt",511,"1a00aefe39678e39dcaa7a05682a68f38785e8e6fadfe2fc8b1396da2055f584"],["FASTBOOT_VERIFICATION.json",2384,"204f89db7facbde688476fde083e4ffef8d4779ac9e70c3a19cd82cf00ddf47b"],["PARTS_SHA256.txt",414,"2466196a8defa4025075a1677836ac77232086f328189ba167af5c3778e4b4fd"],["REMOVAL_LIST_48_PACKAGES.txt",3397,"0b66ed5b28b6dd1e132cc379ff3569b885a06833e284268fa21433c0f1833806"],["SUPER_VERIFICATION.json",19403,"3a456aac5c33f4513a84d25d2815e4c98607885f0476fabe29008dfeceeed640"],["WINDOWS_JOIN_FULL_FIRMWARE.ps1",779,"6de0bf788bdfe8d3d02b2802323d19bb1147a8d6f614c8db070dcf1dcfa1f850"],["yunluo_HyperOS1_Global_Build4_Official_v1.0.0_FULL_Fastboot.zip.part001",1850000000,"34ecacd5050b8dd86644ddb629ebdd411eb19d5c87feeccd5aa2f3216f21af40"],["yunluo_HyperOS1_Global_Build4_Official_v1.0.0_FULL_Fastboot.zip.part002",1850000000,"4634f1a4cf85bdd4d6b7347c8d88f72db7093d01e062cf87d762ffa702fcb5cd"],["yunluo_HyperOS1_Global_Build4_Official_v1.0.0_FULL_Fastboot.zip.part003",1408834189,"63f24a36b48cf88643cbb90233733df33b94cd6cf88db65b4f405973f91bb0da"],["ZIP_SHA256.txt",130,"c16e9e6ad8baaa8e362448a77c61f2722d6661de6e32aaae9867d85763db497a"]]}
+          actual={a["name"]:(a["size"],a["digest"]) for a in r["assets"]}
+          assert actual==expected, "Draft release assets do not match known offline-verified firmware: "+str({"missing":set(expected)-set(actual),"extra":set(actual)-set(expected),"bad":[k for k in expected.keys()&actual.keys() if expected[k]!=actual[k]]})
+          assert sum(size for name,(size,d) in expected.items() if ".zip.part" in name)==5108834189
+          assert len([name for name in expected if ".zip.part" in name])==3
+          steps={s["name"]:s for s in job["steps"]}
+          passed=("Validate exact 48-package removal selection and protected Android components",
+          "Install pinned Android image tools and EROFS utilities",
+          "Download original checksum-verified Xiaomi HyperOS 1 Global stock firmware",
+          "Rebuild only affected EROFS images, delete whole app directories and audit all app-owned libs",
+          "Package and validate COMPLETE fastboot ZIP, vbmeta, Xiaomi CRC and segment SHA256",
+          "Include complete removal, native-library audit and user-facing changelog in release")
+          assert job["id"]==125745745536 and job["run_id"]==41584191211
+          for name in passed:
+              assert steps[name]["conclusion"]=="success", "Original run did not pass "+name
+          print("PASS: 48-app original build, patched vbmeta & CRC, app folder/lib audit, full ZIP offline integrity, 12 uploaded GitHub asset sizes & SHA256 digests")
+          
+          PY
+
+      - name: Confirm obsolete releases and exact tag IDs before deletion
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ENTRY in "v.0.1:427571344" "v.0.2:427596225"; do
+            TAG="${ENTRY%%:*}"
+            ID="${ENTRY##*:}"
+            gh api "repos/$GITHUB_REPOSITORY/releases/$ID" > old-release.json
+            python3 - "$TAG" "$ID" <<'PY'
+          import json,sys
+          d=json.load(open("old-release.json"))
+          assert d["tag_name"]==sys.argv[1] and str(d["id"])==sys.argv[2]
+          assert not d["draft"] and d["prerelease"]
+          print("Verified only obsolete historical prerelease:",d["tag_name"],d["id"])
+          PY
+          done
+
+      - name: Delete the two old releases AND tags only after verified v1.0.0 assets exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ENTRY in "v.0.1:427571344" "v.0.2:427596225"; do
+            TAG="${ENTRY%%:*}"
+            ID="${ENTRY##*:}"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$ID" >/dev/null
+            echo "Deleted old release $TAG"
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null
+              echo "Deleted old tag $TAG"
+            fi
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+              echo "ERROR: Old tag still exists: $TAG" >&2
+              exit 1
+            fi
+            if gh api "repos/$GITHUB_REPOSITORY/releases/$ID" >/dev/null 2>&1; then
+              echo "ERROR: Old Release still exists: $TAG" >&2
+              exit 1
+            fi
+          done
+
+      - name: Publish existing Build4 official project release by numeric ID
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/432317697" -F draft=false -F prerelease=false > published-release.json
+          python3 - <<'PY'
+          import json
+          a=json.load(open("draft-release.json"))
+          b=json.load(open("published-release.json"))
+          assert b["id"]==a["id"]==432317697
+          assert b["tag_name"]=="v1.0.0" and not b["draft"] and not b["prerelease"]
+          assert {x["name"]:(x["size"],x["digest"]) for x in a["assets"]}=={x["name"]:(x["size"],x["digest"]) for x in b["assets"]}
+          assert b["target_commitish"]==a["target_commitish"]
+          print("PASS official custom project v1.0.0 released with unchanged 12 firmware and verification assets")
+          print("RELEASE",b["html_url"])
+          PY
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v1.0.0" --jq '.ref'
+          gh release view v1.0.0 --json url,name,isDraft,isPrerelease,assets --jq '{url,name,isDraft,isPrerelease,assets:[.assets[].name]}'
