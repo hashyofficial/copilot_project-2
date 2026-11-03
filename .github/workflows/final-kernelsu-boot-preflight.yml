@@ -15,7 +15,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --user --disable-pip-version-check gdown
-          python3 -m gdown --id 1G1d4bzrP5fGJfGCcqUbHj_4xTN51N_72 --output boot.img
+          python3 -m gdown --fuzzy "https://drive.google.com/file/d/1G1d4bzrP5fGJfGCcqUbHj_4xTN51N_72/view?usp=sharing" --output boot.img
           python3 - <<'PY'
           import hashlib,struct,pathlib
           p=pathlib.Path("boot.img")
