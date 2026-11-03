@@ -1,0 +1,75 @@
+# BUILD 5: identical approved 48 package removals to Build 4. The only fixes are image preflight and packaging checks.
+# HyperOS 1 Global Build 5 official custom ROM (experimental until physically boot tested).
+# Device: Redmi Pad Wi-Fi yunluo, from pinned original OS1.0.9.0.ULYMIXM fastboot stock.
+# USER CONFIRMED: 48 unique stock APK package IDs. No ad hoc extra removals.
+# Only two selected resources are APKs in shared overlay directories: GSA and PersonalSafety.
+# 46 complete app directories + 2 individual shared overlay APKs MUST be excluded.
+# Every retained APK, including Android System Intelligence + Private Compute Services, must be byte/UID/GID/mode/SELinux identical to stock.
+# Do not touch APEX packages, Carrier, Telecom, CellBroadcast, NetworkStack, Xiaomi original Gallery, or factory flashing scripts.
+# Source: stock Stage 3 verified inventory, 329 valid APKs / 307 package IDs. IDs reuse the original stock inventory indices.
+# Android Auto com.google.android.projection.gearhead is absent from stock; no attempted removal.
+# Duplicate requests Log Generator=CatchLog, Market Feedback Agent=GoogleFeedback are counted once.
+
+# Google Search, Assistant, accessibility and voice
+035 com.google.android.googlequicksearchbox
+093 com.google.android.apps.googleassistant
+036 com.android.hotwordenrollment.okgoogle
+037 com.android.hotwordenrollment.xgoogle
+071 com.google.android.tts
+002 com.google.android.marvin.talkback
+073 com.google.android.accessibility.switchaccess
+243 com.google.android.overlay.gmsconfig.gsa
+
+# Google preinstalled apps
+090 com.google.android.youtube
+091 com.google.android.apps.youtube.music
+062 com.google.android.apps.photos
+022 com.google.android.apps.docs
+049 com.google.android.apps.maps
+050 com.google.android.apps.tachyon
+043 com.google.android.videos
+098 com.google.android.apps.podcasts
+096 com.google.android.apps.magazines
+097 com.google.android.apps.subscriptions.red
+
+# Google auxiliary and ad/feedback components
+020 com.google.android.apps.wellbeing
+061 com.google.android.apps.safetyhub
+039 com.google.android.gms.location.history
+186 com.google.android.feedback
+152 com.google.android.printservice.recommendation
+017 com.google.android.apps.restore
+048 com.google.mainline.adservices
+040 com.google.android.onetimeinitializer
+244 com.google.android.overlay.gmsconfig.personalsafety
+
+# MediaTek test, diagnostics, voice
+178 com.mediatek.engineermode
+184 com.mediatek.lbs.em2.ui
+175 com.debug.loggerui
+187 com.mediatek.mdmconfig
+188 com.mediatek.mdmlsample
+203 com.xiaomi.mtb
+216 com.mediatek.ygps
+169 com.mediatek.atci.service
+166 com.modemdebug
+212 com.mediatek.voicecommand
+213 com.mediatek.voiceunlock
+
+# Android optional utilities
+114 com.android.bluetoothmidiservice
+115 com.android.bookmarkprovider
+
+# Other originally selected diagnostics and provisioning
+060 android.autoinstalls.config.Xiaomi.model
+046 com.bsp.catchlog
+011 com.miui.cit
+
+# Newly requested, non-duplicate
+111 com.android.dreams.basic
+068 com.miui.miservice
+102 com.xiaomi.payment
+103 cn.wps.xiaomi.abroad.lite
+162 com.android.apps.tag
+
+# PROTECTED: com.google.android.gm, com.google.android.calendar, com.google.android.contacts, com.google.android.as, com.google.android.as.oss, com.google.android.overlay.gmsconfig.asi, com.google.android.syncadapters.calendar, com.google.android.gms, com.google.android.gsf, com.android.vending, com.android.networkstack, com.google.android.networkstack, com.google.android.healthconnect.controller, com.google.android.cellbroadcastreceiver
