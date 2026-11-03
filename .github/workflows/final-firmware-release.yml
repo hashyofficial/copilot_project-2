@@ -1,0 +1,333 @@
+# Final firmware: remove Notes, replace boot with KernelSU Next, publish and verify before deleting previous releases.
+name: Build 1 - Final Firmware Release
+
+# Only this workflow creation triggers the actual build. Keep stock and earlier
+# experimental workflows untouched. Distribution is GitHub Release ONLY.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/final-firmware-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hyperos-final_firmware-official-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-verify-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      HYPEROS_ARCHIVE: ${{ github.workspace }}/.hyperos-work/stock/yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz
+      HYPEROS_REPORTS: ${{ github.workspace }}/.hyperos-work/reports
+      FINAL_REPORTS: ${{ github.workspace }}/.hyperos-work/reports
+      FINAL_PRIVATE: ${{ github.workspace }}/.hyperos-work/private
+      FINAL_OUTPUT: ${{ github.workspace }}/.hyperos-work/release
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate exact 54-package removal selection and protected Android components
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile workflow/hyperos/*.py scripts/final_firmware_build.py scripts/final_firmware_package.py stage3/scan.py
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0,"scripts")
+          from final_firmware_build import selected, PROTECT, ADDON_PATHS
+          import re,pathlib
+          old={}
+          for line in pathlib.Path("config/hyperos-build6-final-selected.txt").read_text().splitlines():
+              match=re.fullmatch(r"\s*(\d+)\s+([A-Za-z0-9_.]+)\s*",line)
+              if match:old[match.group(2)]=int(match.group(1))
+          x=selected()
+          assert len(old)==53 and len(x)==54
+          assert set(x)==set(old)|{"com.miui.notes"}
+          assert all(x[k]==old[k] for k in old)
+          assert len(ADDON_PATHS)==6 and "com.miui.notes" in ADDON_PATHS
+          assert not set(x).intersection(PROTECT)
+          expected={
+              "com.google.android.apps.safetyhub":61,
+              "com.google.android.printservice.recommendation":152,
+              "com.google.android.feedback":186,
+              "com.bsp.catchlog":46,
+              "com.android.dreams.basic":111,
+              "com.miui.miservice":68,
+              "com.xiaomi.payment":102,
+              "cn.wps.xiaomi.abroad.lite":103,
+              "com.android.apps.tag":162,
+              "com.miui.weather2":330,
+              "com.xiaomi.smarthome":331,
+              "com.miui.creation":332,
+              "com.android.soundrecorder":333,
+              "com.xiaomi.scanner":334,
+              "com.miui.notes":335,
+          }
+          for pkg,number in expected.items():
+              assert x[pkg]==number,(pkg,x.get(pkg))
+          essential={
+              "com.google.android.gm","com.google.android.calendar",
+              "com.google.android.contacts","com.google.android.as",
+              "com.google.android.as.oss","com.google.android.overlay.gmsconfig.asi",
+              "com.google.android.syncadapters.calendar","com.miui.gallery",
+              "com.miui.securitycenter","com.miui.cleaner","com.android.phone",
+              "com.android.providers.contacts","com.google.android.gms",
+              "com.miui.home","com.miui.screenrecorder","com.mediatek.callrecorder",
+          }
+          assert not essential.intersection(x)
+          assert "com.google.android.projection.gearhead" not in x
+          print("PASS: 54 unique user-approved stock APK IDs; retained Gmail, Calendar, Contacts, Intelligence, Private Compute, Gallery, Networking and APEX")
+          PY
+          mkdir -p "$FINAL_REPORTS" "$FINAL_PRIVATE" "$FINAL_OUTPUT" "$(dirname "$HYPEROS_ARCHIVE")"
+
+      - name: Install pinned Android image tools and EROFS utilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates attr erofs-utils file python3 util-linux
+          python3 workflow/hyperos/inventory.py --install-tools
+          test -x .tools/android-tools-static/lpunpack
+          find "$ANDROID_HOME/build-tools" -maxdepth 2 -name aapt2 | head
+          df -h "$RUNNER_TEMP"
+
+      - name: Download user's known-working KernelSU Next boot.img from Google Drive and pin exact SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user --disable-pip-version-check gdown==6.5.1
+          python3 -m gdown "https://drive.google.com/file/d/1G1d4bzrP5fGJfGCcqUbHj_4xTN51N_72/view?usp=sharing" -O "$FINAL_PRIVATE/boot.img"
+          python3 - <<'PY'
+          import pathlib,hashlib,struct,os
+          img=pathlib.Path(os.environ["FINAL_PRIVATE"])/"boot.img"
+          assert img.stat().st_size==67_108_864
+          with img.open("rb") as f:head=f.read(64)
+          assert head[:8]==b"ANDROID!" and struct.unpack_from("<I",head,40)[0]==4
+          sha=hashlib.sha256(img.read_bytes()).hexdigest()
+          assert sha=="32eb0d6558828992e4bc64aeb217dcd38e73875f65e32a24a17c8c578aff3c81","Incorrect boot image from Drive"
+          print("PASS pinned KernelSU Next boot.img:",sha)
+          PY
+
+      - name: Download original checksum-verified Xiaomi HyperOS 1 Global stock firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 workflow/hyperos/download.py --output "$HYPEROS_ARCHIVE" --report "$FINAL_REPORTS/download-sources.json"
+          echo "f8dbb84a10dc96a9d3ce9e78883e87f3  $HYPEROS_ARCHIVE" | md5sum -c -
+          sha256sum "$HYPEROS_ARCHIVE" | tee "$FINAL_REPORTS/source-archive-sha256.txt"
+
+      - name: Rebuild only affected EROFS images, delete whole app directories and audit all app-owned libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo --preserve-env=HYPEROS_ARCHIVE,HYPEROS_REPORTS,FINAL_REPORTS,FINAL_PRIVATE,RUNNER_TEMP,ANDROID_HOME \
+            python3 -u scripts/hyperos_final_firmware.py
+          sudo chown -R "$(id -u):$(id -g)" "$FINAL_REPORTS" "$FINAL_PRIVATE"
+          python3 - <<'PY'
+          import os,json,pathlib
+          private=pathlib.Path(os.environ["FINAL_PRIVATE"])
+          reports=pathlib.Path(os.environ["FINAL_REPORTS"])
+          m=json.loads((private/"manifest.json").read_text())
+          assert m["selected_package_count"]==54 and m["removed_apk_count"]==54
+          assert m["entire_app_folders_removed"]==52
+          assert m["additional_app_folders_recursively_removed"]==6
+          assert len(m["additional_stock_apps_removed"])==6 and m["netflix_is_user_data_not_stock_super"]
+          assert m["individual_shared_overlay_apks_removed"]==2
+          assert m["all_selected_folder_paths_absent_after_rebuild"]
+          assert sorted(m["rebuilt_partitions"])==["mi_ext_a","product_a","system_a","system_ext_a"]
+          assert m["source_lp_metadata_preserved"] and m["retained_apks_same_bytes_owner_mode_selinux"]
+          assert m["other_lp_regions_unchanged"]
+          assert m["owned_file_count_removed"]>=52
+          assert all(p["removed_paths_absent_after_rebuild"] and p["removed_folder_contents_audited"] for p in m["partitions"])
+          assert (private/"super.sparse.img").stat().st_size>100_000_000
+          for partition in m["rebuilt_partitions"]:
+              audit=json.loads((reports/("removed-folders-content-"+partition+".json")).read_text())
+              assert audit["whole_directories_deleted"]==next(p["whole_app_folders_removed"] for p in m["partitions"] if p["partition"]==partition)
+              assert audit["app_owned_file_count"]>=audit["whole_directories_deleted"]
+          print("PASS: 52 entire app folders plus all their app-owned files/libraries removed; 2 shared overlays removed individually")
+          print("Audited total app-owned files:",m["owned_file_count_removed"])
+          print("Audited app-owned JNI/native libraries:",m["owned_native_libraries_removed"])
+          print("Audited app-owned compiled-code files:",m["owned_compiled_files_removed"])
+          PY
+
+      - name: Package and validate COMPLETE fastboot ZIP, vbmeta, Xiaomi CRC and segment SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u scripts/hyperos_package6.py
+          python3 - <<'PY'
+          import os,pathlib,json,hashlib
+          out=pathlib.Path(os.environ["FINAL_OUTPUT"])
+          rep=pathlib.Path(os.environ["FINAL_REPORTS"])
+          v=json.loads((rep/"FASTBOOT_TEST_VERIFICATION.json").read_text())
+          assert v["status"]=="offline_verified_NOT_device_boot_tested"
+          assert v["exact_archived_super_crc_recheck"] and v["exact_archived_super_sha256_recheck"]
+          assert v["first_super_sparse_crc"].startswith("0x")
+          hashes={}
+          for line in (out/"FASTBOOT_IMAGE_SHA256.txt").read_text().splitlines():
+              sha,path=line.split("  ",1)
+              assert len(sha)==64 and path not in hashes
+              hashes[path]=sha
+          expected_sha=json.loads((pathlib.Path(os.environ["FINAL_PRIVATE"])/"manifest.json").read_text())["new_super_sparse_sha256"]
+          assert hashes==dict(hashes) and len(hashes)==6
+          assert hashes["images/super.img"]==expected_sha
+          assert hashes["images/boot.img"]=="32eb0d6558828992e4bc64aeb217dcd38e73875f65e32a24a17c8c578aff3c81"
+          assert v["patched_kernelsu_next_boot_sha256"]==hashes["images/boot.img"]
+          assert v["notes_folder_removed"] and v["tested_boot_sha256_pin_matches"]
+          assert hashes["images/vbmeta.img"]==v["patched_main_vbmeta_sha256"]
+          assert hashes["flash_all.bat"]==v["original_flash_all_bat_sha256"]
+          assert (out/"VERIFY_FINAL_FASTBOOT.ps1").is_file()
+          assert v["release_target"]=="v1.0.0"
+          assert v["selected_package_count"]==54 and v["removed_apk_count"]==54
+          assert v["entire_app_folders_removed"]==52 and v["individual_shared_overlay_apks_removed"]==2
+          assert v["netflix_is_user_data_not_stock_super"] and len(v["additional_stock_app_folders_removed"])==6
+          assert v["vbmeta_flags"]==3 and v["flash_scripts_preserved"]
+          assert v["other_firmware_files_unchanged"] and v["all_selected_folder_paths_absent_after_rebuild"]
+          assert v["owned_file_count_removed"]>=52 and v["stock_system_apex_unchanged"]
+          assert len(v["parts"])>=2
+          assert sum(p["bytes"] for p in v["parts"])==v["full_zip_bytes"]
+          for p in v["parts"]:
+              assert p["bytes"]<2_000_000_000
+              path=out/p["filename"]
+              assert path.exists() and path.stat().st_size==p["bytes"]
+              h=hashlib.sha256()
+              with path.open("rb") as f:
+                  for b in iter(lambda:f.read(8*1024*1024),b""):h.update(b)
+              assert h.hexdigest()==p["sha256"]
+          print("PASS: Full Xiaomi fastboot ZIP tested and SHA256-matched, original flash scripts verified; GitHub Release chunks checked")
+          PY
+
+      - name: Include complete removal, native-library audit and user-facing changelog in release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp release/FINAL_FIRMWARE_CHANGELOG.md "$FINAL_OUTPUT/CHANGELOG.md"
+          cp config/hyperos-final-firmware-selected.txt "$FINAL_OUTPUT/REMOVAL_LIST_54_PACKAGES.txt"
+          cp "$FINAL_REPORTS/FASTBOOT_TEST_VERIFICATION.json" "$FINAL_OUTPUT/FASTBOOT_VERIFICATION.json"
+          cp "$FINAL_REPORTS/final_firmware-super-verification.json" "$FINAL_OUTPUT/SUPER_VERIFICATION.json"
+          cp scripts/REMOVE_NETFLIX_USER_APP.ps1 "$FINAL_OUTPUT/REMOVE_NETFLIX_USER_APP.ps1"
+          cp scripts/ONE_CLICK_DOWNLOAD_AND_EXTRACT.ps1 "$FINAL_OUTPUT/ONE_CLICK_DOWNLOAD_AND_EXTRACT.ps1"
+          python3 - <<'PY'
+          import os,json,pathlib,zipfile
+          report=pathlib.Path(os.environ["FINAL_REPORTS"])
+          dest=pathlib.Path(os.environ["FINAL_OUTPUT"])
+          with zipfile.ZipFile(dest/"APP_FOLDER_AND_LIBRARIES_AUDIT.zip","w",zipfile.ZIP_DEFLATED,compresslevel=6) as z:
+              audits=sorted(report.glob("removed-folders-content-*.json"))
+              if len(audits)!=4:raise RuntimeError("Missing one or more app file content audits")
+              for audit in audits:z.write(audit,audit.name)
+          v=json.loads((dest/"FASTBOOT_VERIFICATION.json").read_text())
+          with (dest/"CHANGELOG.md").open("a",encoding="utf-8") as f:
+              f.write("\n## Verified built-image folder/library audit\n\n")
+              f.write(f"- Recursively removed app-owned files: {v['owned_file_count_removed']}\n")
+              f.write(f"- App-owned native libraries inside removed folders: {v['owned_native_libraries_removed']}\n")
+              f.write(f"- App-owned compiled code files inside removed folders: {v['owned_compiled_files_removed']}\n")
+              f.write("- External shared libraries have not been deleted without exclusive-ownership proof.\n")
+          print("Final removal and native library audit ZIP created")
+          PY
+
+      - name: Upload complete firmware assets to draft GitHub Release v1.0.0
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create v1.0.0 \
+            "$FINAL_OUTPUT/"*.part* \
+            "$FINAL_OUTPUT/ZIP_SHA256.txt" \
+            "$FINAL_OUTPUT/PARTS_SHA256.txt" \
+            "$FINAL_OUTPUT/WINDOWS_JOIN_FULL_FIRMWARE.ps1" \
+            "$FINAL_OUTPUT/FASTBOOT_IMAGE_SHA256.txt" \
+            "$FINAL_OUTPUT/VERIFY_FINAL_FASTBOOT.ps1" \
+            "$FINAL_OUTPUT/ONE_CLICK_DOWNLOAD_AND_EXTRACT.ps1" \
+            "$FINAL_OUTPUT/REMOVE_NETFLIX_USER_APP.ps1" \
+            "$FINAL_OUTPUT/DOWNLOAD_INSTRUCTIONS.txt" \
+            "$FINAL_OUTPUT/CHANGELOG.md" \
+            "$FINAL_OUTPUT/REMOVAL_LIST_54_PACKAGES.txt" \
+            "$FINAL_OUTPUT/APP_FOLDER_AND_LIBRARIES_AUDIT.zip" \
+            "$FINAL_OUTPUT/FASTBOOT_VERIFICATION.json" \
+            "$FINAL_OUTPUT/SUPER_VERIFICATION.json" \
+            --title "Build 1 - Final Firmware Release" \
+            --notes-file "$FINAL_OUTPUT/CHANGELOG.md" \
+            --target "$GITHUB_SHA" --draft
+          # Draft releases cannot be fetched reliably by /releases/tags/<tag>!
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$FINAL_REPORTS/releases-staged.json"
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          report=pathlib.Path(os.environ["FINAL_REPORTS"])
+          out=pathlib.Path(os.environ["FINAL_OUTPUT"])
+          ls=json.loads((report/"releases-staged.json").read_text())
+          matched=[r for r in ls if r["tag_name"]=="v1.0.0" and r["draft"] and r["target_commitish"]==os.environ["GITHUB_SHA"]]
+          if len(matched)!=1:raise RuntimeError("Unable to locate exact new draft release by tag+commit")
+          release=matched[0]
+          actual={a["name"]:(a["size"],a.get("digest")) for a in release["assets"]}
+          expected={}
+          for p in out.iterdir():
+              if not p.is_file():continue
+              h=hashlib.sha256()
+              with p.open("rb") as fp:
+                  for chunk in iter(lambda:fp.read(8*1024*1024),b""):h.update(chunk)
+              expected[p.name]=(p.stat().st_size,"sha256:"+h.hexdigest())
+          if expected!=actual:
+              raise RuntimeError("Uploaded asset size/digest mismatch. Not deleting Build4. Missing="+str(set(expected)-set(actual))+" extra="+str(set(actual)-set(expected))+" differing="+str([k for k in expected.keys()&actual.keys() if expected[k]!=actual[k]]))
+          assert len([n for n in expected if ".zip.part" in n])>=2
+          assert {"FASTBOOT_IMAGE_SHA256.txt","VERIFY_FINAL_FASTBOOT.ps1","REMOVE_NETFLIX_USER_APP.ps1","ONE_CLICK_DOWNLOAD_AND_EXTRACT.ps1","REMOVAL_LIST_54_PACKAGES.txt","ZIP_SHA256.txt","PARTS_SHA256.txt"}.issubset(expected)
+          (report/"final_firmware-release-id.txt").write_text(str(release["id"])+"\n")
+          assert len(expected)>=16
+          print("PASS: final firmware.zip parts and SHA256 of",len(expected),"assets. Draft ID",release["id"])
+          PY
+
+      - name: Publish Final Build 1 v1.0.0 as non-prerelease official custom project Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ID="$(cat "$FINAL_REPORTS/final_firmware-release-id.txt")"
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -F prerelease=false > "$FINAL_REPORTS/published-release.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          rep=pathlib.Path(os.environ["FINAL_REPORTS"])
+          d=json.loads((rep/"published-release.json").read_text())
+          assert d["id"]==int((rep/"final_firmware-release-id.txt").read_text())
+          assert d["tag_name"]=="v1.0.0" and not d["draft"] and not d["prerelease"]
+          assert len(d["assets"])>=16
+          print("SUCCESS: Build 1 - Final Firmware Release published:",d["html_url"])
+          PY
+          gh release view v1.0.0 --json url,name,assets,isDraft,isPrerelease --jq '{url,name,isDraft,isPrerelease,files:[.assets[].name]}'
+
+      - name: Delete all older GitHub Releases and their tags after verified final publication
+        shell: bash
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$FINAL_REPORTS/releases-before-cleanup.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          p=pathlib.Path(os.environ["FINAL_REPORTS"])
+          allr=json.loads((p/"releases-before-cleanup.json").read_text())
+          final=[r for r in allr if r["tag_name"]=="v1.0.0" and not r["draft"] and not r["prerelease"]]
+          assert len(final)==1 and len(final[0]["assets"])>=16
+          old=[(r["id"],r["tag_name"]) for r in allr if r["id"]!=final[0]["id"]]
+          assert all("/" not in tag and ".." not in tag for _,tag in old)
+          (p/"obsolete-releases.tsv").write_text("".join(str(id)+"\t"+tag+"\n" for id,tag in old))
+          print("Deleting old Release count",len(old))
+          PY
+          while IFS=$'\t' read -r OLDID OLDTAG; do
+            if [ -z "\${OLDID:-}" ]; then continue; fi
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$OLDID" >/dev/null
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$OLDTAG" >/dev/null 2>&1; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$OLDTAG" >/dev/null
+            fi
+            echo "Deleted old release/tag: $OLDTAG"
+          done < "$FINAL_REPORTS/obsolete-releases.tsv"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$FINAL_REPORTS/releases-after-cleanup.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          a=json.loads((pathlib.Path(os.environ["FINAL_REPORTS"])/"releases-after-cleanup.json").read_text())
+          assert len(a)==1 and a[0]["tag_name"]=="v1.0.0" and not a[0]["draft"]
+          print("PASS: only Build 1 - Final Firmware Release remains published")
+          PY
