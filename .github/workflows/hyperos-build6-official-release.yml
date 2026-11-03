@@ -1,3 +1,4 @@
+# Final project v1.2.0: resume after correcting the Build6 53-package selection file path; preserve Build5 and its release.
 name: HyperOS1 Yunluo Build 6 - Official Custom ROM Release v1.2.0
 
 # Only this workflow creation triggers the actual build. Keep stock and earlier
