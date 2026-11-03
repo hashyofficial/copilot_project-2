@@ -77,7 +77,7 @@ def write(name,value):
     (REPORT/name).write_text(value,encoding="utf-8")
 
 def selected():
-    file=ROOT/"config/hyperos-build6-official-selected.txt"
+    file=ROOT/"config/hyperos-build6-final-selected.txt"
     result={}
     for line in file.read_text().splitlines():
         if line.startswith("#") or not line.strip():continue
