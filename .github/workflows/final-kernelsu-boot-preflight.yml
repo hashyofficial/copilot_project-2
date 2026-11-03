@@ -24,9 +24,12 @@ jobs:
           size=p.stat().st_size
           assert 1_000_000<size<200_000_000, "Unexpected kernel image size"
           kernel_size=struct.unpack_from("<I",data,8)[0]
-          ramdisk_size=struct.unpack_from("<I",data,16)[0]
+          ramdisk_size=struct.unpack_from("<I",data,12)[0]
+          header_size=struct.unpack_from("<I",data,20)[0]
+          header_version=struct.unpack_from("<I",data,40)[0]
+          print("Boot header v3/v4 check:",header_size,header_version)
           assert 0<kernel_size<size, "Invalid Android boot kernel size"
-          assert ramdisk_size<size
+          assert 0<=ramdisk_size<size, "Invalid Android v3/v4 ramdisk size"
           h=hashlib.sha256()
           with p.open("rb") as f:
               for b in iter(lambda:f.read(8*1024*1024),b""):h.update(b)
