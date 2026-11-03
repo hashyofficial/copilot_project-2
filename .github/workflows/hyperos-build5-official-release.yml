@@ -165,7 +165,7 @@ jobs:
         run: |
           set -euo pipefail
           cp release/HyperOS1-Yunluo-Build5-Official-v1.1.0-CHANGELOG.md "$BUILD5_OUTPUT/CHANGELOG.md"
-          cp config/hyperos-build4-official-selected.txt "$BUILD5_OUTPUT/REMOVAL_LIST_48_PACKAGES.txt"
+          cp config/hyperos-build5-official-selected.txt "$BUILD5_OUTPUT/REMOVAL_LIST_48_PACKAGES.txt"
           cp "$BUILD5_REPORTS/FASTBOOT_TEST_VERIFICATION.json" "$BUILD5_OUTPUT/FASTBOOT_VERIFICATION.json"
           cp "$BUILD5_REPORTS/build5-super-verification.json" "$BUILD5_OUTPUT/SUPER_VERIFICATION.json"
           python3 - <<'PY'
