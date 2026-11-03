@@ -1,0 +1,39 @@
+name: Diagnose Build4 super SHA256 and first sparse CRC against failed flash
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-build4-sparsecrc.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-published-reports:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retrieve completed Build4 verification reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download v1.0.0 -p SUPER_VERIFICATION.json -p FASTBOOT_VERIFICATION.json -p PARTS_SHA256.txt --dir .
+          python3 - <<'PY'
+          import json
+          s=json.load(open("SUPER_VERIFICATION.json"))
+          f=json.load(open("FASTBOOT_VERIFICATION.json"))
+          local_sha="aa6b2bc95ddb068232e0b772069468b0827b25c71b651ec1d63bff78df5138c1"
+          print("USER_SUPER_SHA256",local_sha)
+          print("RELEASE_SUPER_SHA256",s["new_super_sparse_sha256"])
+          print("SUPER_SHA256_MATCH",s["new_super_sparse_sha256"].lower()==local_sha)
+          print("RELEASE_SUPER_SPARSE_BYTES",s["new_super_sparse_bytes"])
+          print("SPARSE_CRC_SEGMENTS",f["modified_super_crc_segments"])
+          print("ORIGINAL_STOCK_SUPER_CRC_SEGMENTS",f["stock_original_super_crc_segments"])
+          print("REMOVAL_PACKAGE_COUNT",f["selected_package_count"])
+          print("Vbmeta_flags",f["vbmeta_flags"])
+          print("REBUILD_PARTITIONS",s["rebuilt_partitions"])
+          print("ZIP_SHA256",f["full_zip_sha256"])
+          PY
