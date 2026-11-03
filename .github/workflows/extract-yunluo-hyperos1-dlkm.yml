@@ -1,0 +1,112 @@
+name: Extract stock vendor_dlkm.img and odm_dlkm.img (HyperOS1 Yunluo)
+
+# Read-only extraction. Do not flash, change firmware, run a build, or touch v1.0.0.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/extract-yunluo-hyperos1-dlkm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yunluo-stock-dlkm-extract
+  cancel-in-progress: false
+
+jobs:
+  extract-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      HYPEROS_ARCHIVE: ${{ github.workspace }}/.dlkm-work/stock/yunluo_global_images_OS1.0.9.0.ULYMIXM_20250416.0000.00_14.0_global_f8dbb84a10.tgz
+      DLKM_WORK: ${{ github.workspace }}/.dlkm-work/extraction
+      DLKM_OUTPUT: ${{ github.workspace }}/.dlkm-work/output
+      DLKM_TAG: hyperos1-yunluo-stock-dlkm-images
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check extraction program and install image tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/extract_yunluo_stock_dlkm.py workflow/hyperos/download.py
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2 curl ca-certificates attr erofs-utils file python3 util-linux
+          python3 workflow/hyperos/inventory.py --install-tools
+          mkdir -p "$(dirname "$HYPEROS_ARCHIVE")" "$DLKM_WORK" "$DLKM_OUTPUT"
+
+      - name: Download unmodified original Xiaomi Global ROM and verify MD5 and SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 workflow/hyperos/download.py --output "$HYPEROS_ARCHIVE" --report "$DLKM_OUTPUT/source-download.json"
+          echo "f8dbb84a10dc96a9d3ce9e78883e87f3  $HYPEROS_ARCHIVE" | md5sum -c -
+          echo "90562e6f369bb17cdaf67a86f2b72b16492fb1a63c86f7e389cf2ba306942530  $HYPEROS_ARCHIVE" | sha256sum -c -
+
+      - name: Extract only two untouched EROFS logical partition images and verify resulting ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u scripts/extract_yunluo_stock_dlkm.py
+          python3 - <<'PY'
+          import os, pathlib, json, zipfile, hashlib
+          dest=pathlib.Path(os.environ["DLKM_OUTPUT"])
+          m=json.loads((dest/"DLKM_VERIFICATION.json").read_text())
+          assert sorted(x["zip_filename"] for x in m["images"])==["odm_dlkm.img","vendor_dlkm.img"]
+          assert {x["zip_filename"]:x["size_bytes"] for x in m["images"]}=={"vendor_dlkm.img":11292672,"odm_dlkm.img":348160}
+          f=dest/m["zip_filename"]
+          assert f.exists() and f.stat().st_size==m["zip_bytes"]
+          assert hashlib.sha256(f.read_bytes()).hexdigest()==m["zip_sha256"]
+          with zipfile.ZipFile(f) as z:
+              assert sorted(z.namelist())==["odm_dlkm.img","vendor_dlkm.img"]
+              assert z.testzip() is None
+          print("PASS: two verified intact EROFS partition images inside ZIP")
+          PY
+
+      - name: Publish separate source-image ZIP as GitHub Release (no full ROM rebuild)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$DLKM_TAG" >/dev/null 2>&1; then
+            echo "Existing source DLKM release tag found; refusing overwrite" >&2
+            exit 1
+          fi
+          cat > "$DLKM_OUTPUT/README_DLKM.txt" <<'EOF'
+          Xiaomi Redmi Pad Wi-Fi / yunluo — HyperOS 1 Global OS1.0.9.0.ULYMIXM
+          This is a verified, read-only extraction from original Xiaomi super.img.
+          vendor_dlkm.img is vendor_dlkm_a; odm_dlkm.img is odm_dlkm_a.
+          Both images are raw full partition EROFS images, NOT individual .ko files.
+          The ZIP contains exactly vendor_dlkm.img and odm_dlkm.img.
+          The SHA256 file and verification manifest are separate release assets.
+          No Android firmware, bootloader, kernel or Build 4 image was modified.
+          Build 4 preserved these original source logical regions unchanged.
+          This extraction is not itself a flashable firmware package.
+          EOF
+          gh release create "$DLKM_TAG" \
+            "$DLKM_OUTPUT/yunluo_HyperOS1_Global_OS1.0.9.0_VENDOR_ODM_DLKM_IMAGES.zip" \
+            "$DLKM_OUTPUT/DLKM_SHA256.txt" \
+            "$DLKM_OUTPUT/DLKM_VERIFICATION.json" \
+            "$DLKM_OUTPUT/README_DLKM.txt" \
+            --title "Redmi Pad yunluo HyperOS 1 - Stock vendor_dlkm and odm_dlkm images" \
+            --notes-file "$DLKM_OUTPUT/README_DLKM.txt" \
+            --target "$GITHUB_SHA" \
+            --latest=false
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$DLKM_TAG" > "$DLKM_OUTPUT/github-release.json"
+          python3 - <<'PY'
+          import os,json,pathlib
+          d=pathlib.Path(os.environ["DLKM_OUTPUT"])
+          release=json.loads((d/"github-release.json").read_text())
+          expected={p.name:p.stat().st_size for p in d.iterdir()
+              if p.name in {
+                  "yunluo_HyperOS1_Global_OS1.0.9.0_VENDOR_ODM_DLKM_IMAGES.zip",
+                  "DLKM_SHA256.txt","DLKM_VERIFICATION.json","README_DLKM.txt"
+              }}
+          assets={x["name"]:x["size"] for x in release["assets"]}
+          assert len(expected)==4 and assets==expected, ("Asset upload incomplete",expected,assets)
+          assert release["tag_name"]==os.environ["DLKM_TAG"] and not release["draft"]
+          print("PASS: DLKM images release uploaded and checked:",release["html_url"])
+          PY
