@@ -1,0 +1,87 @@
+# BUILD 6: includes all 48 Build 5 package removals plus exactly 5 stock system apps, each with a dedicated folder.
+# HyperOS 1 Global Build 6 official custom ROM (experimental until physically boot tested).
+# Device: Redmi Pad Wi-Fi yunluo, from pinned original OS1.0.9.0.ULYMIXM fastboot stock.
+# USER CONFIRMED: 53 unique stock APK package IDs (48 prior + 5 new). Netflix is separate under /data/app, absent from stock super.img.
+# Only two selected resources are APKs in shared overlay directories: GSA and PersonalSafety.
+# 51 complete app directories + 2 individual shared overlay APKs MUST be excluded.
+# Every retained APK, including Android System Intelligence + Private Compute Services, must be byte/UID/GID/mode/SELinux identical to stock.
+# Do not touch APEX packages, Carrier, Telecom, CellBroadcast, NetworkStack, Xiaomi original Gallery, or factory flashing scripts.
+# Source: stock Stage 3 verified inventory, 329 valid APKs / 307 package IDs. Original 48 IDs retain their historical indices; new 330-334 are Build 6 selection markers, verified by aapt and exact stock paths.
+# Android Auto com.google.android.projection.gearhead is absent from stock; no attempted removal.
+# Duplicate requests Log Generator=CatchLog, Market Feedback Agent=GoogleFeedback are counted once.
+
+# Google Search, Assistant, accessibility and voice
+035 com.google.android.googlequicksearchbox
+093 com.google.android.apps.googleassistant
+036 com.android.hotwordenrollment.okgoogle
+037 com.android.hotwordenrollment.xgoogle
+071 com.google.android.tts
+002 com.google.android.marvin.talkback
+073 com.google.android.accessibility.switchaccess
+243 com.google.android.overlay.gmsconfig.gsa
+
+# Google preinstalled apps
+090 com.google.android.youtube
+091 com.google.android.apps.youtube.music
+062 com.google.android.apps.photos
+022 com.google.android.apps.docs
+049 com.google.android.apps.maps
+050 com.google.android.apps.tachyon
+043 com.google.android.videos
+098 com.google.android.apps.podcasts
+096 com.google.android.apps.magazines
+097 com.google.android.apps.subscriptions.red
+
+# Google auxiliary and ad/feedback components
+020 com.google.android.apps.wellbeing
+061 com.google.android.apps.safetyhub
+039 com.google.android.gms.location.history
+186 com.google.android.feedback
+152 com.google.android.printservice.recommendation
+017 com.google.android.apps.restore
+048 com.google.mainline.adservices
+040 com.google.android.onetimeinitializer
+244 com.google.android.overlay.gmsconfig.personalsafety
+
+# MediaTek test, diagnostics, voice
+178 com.mediatek.engineermode
+184 com.mediatek.lbs.em2.ui
+175 com.debug.loggerui
+187 com.mediatek.mdmconfig
+188 com.mediatek.mdmlsample
+203 com.xiaomi.mtb
+216 com.mediatek.ygps
+169 com.mediatek.atci.service
+166 com.modemdebug
+212 com.mediatek.voicecommand
+213 com.mediatek.voiceunlock
+
+# Android optional utilities
+114 com.android.bluetoothmidiservice
+115 com.android.bookmarkprovider
+
+# Other originally selected diagnostics and provisioning
+060 android.autoinstalls.config.Xiaomi.model
+046 com.bsp.catchlog
+011 com.miui.cit
+
+# Newly requested, non-duplicate
+111 com.android.dreams.basic
+068 com.miui.miservice
+102 com.xiaomi.payment
+103 cn.wps.xiaomi.abroad.lite
+162 com.android.apps.tag
+
+# PROTECTED: com.google.android.gm, com.google.android.calendar, com.google.android.contacts, com.google.android.as, com.google.android.as.oss, com.google.android.overlay.gmsconfig.asi, com.google.android.syncadapters.calendar, com.google.android.gms, com.google.android.gsf, com.android.vending, com.android.networkstack, com.google.android.networkstack, com.google.android.healthconnect.controller, com.google.android.cellbroadcastreceiver
+
+# Final Build 6 additions (five exact stock APKs; preserve Xiaomi system launcher)
+330 com.miui.weather2
+331 com.xiaomi.smarthome
+332 com.miui.creation
+333 com.android.soundrecorder
+334 com.xiaomi.scanner
+
+# IMPORTANT Netflix com.netflix.mediaclient is user-installed in /data/app
+# It is absent from the stock super.img APK inventory and cannot be removed
+# from stock super.img. Build 6 includes optional post-flash ADB uninstall.
+# Keep com.miui.home (launcher), com.miui.screenrecorder, com.mediatek.callrecorder.
