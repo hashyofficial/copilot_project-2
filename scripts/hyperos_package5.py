@@ -164,20 +164,17 @@ def main():
             if z.read(ROOT_NAME+"/images/vbmeta.img")!=new_main:
                 fail("vbmeta patch not present in ZIP")
             if z.read(ROOT_NAME+"/images/sparsecrclist.txt")!=new_sparsecrc.encode("utf-8"):
-                fail("ZIP sparsecrclist differs from the calculated image CRC list")
+                fail("ZIP sparsecrclist differs from calculated CRC list")
             if z.read(ROOT_NAME+"/images/crclist.txt")!=new_crc.encode("utf-8"):
-                fail("ZIP crclist differs from the patched original vbmeta CRC")
+                fail("ZIP crclist differs from updated vbmeta CRC")
             with z.open(ROOT_NAME+"/images/super.img") as file:
                 if checksum(file)!=m["new_super_sparse_sha256"]:
                     fail("ZIP super image hash verification failed")
-            # Independently reopen the exact archived super.img as a streaming
-            # sparse payload; ensure the entire ZIP's actual bytes match the
-            # CRC list written alongside it (not just a source work file).
             with z.open(ROOT_NAME+"/images/super.img") as file:
                 if sparse_crc(file)!=new_crcs:
-                    fail("Archived super.img actual bytes differ from sparsecrclist CRC sequence")
+                    fail("ZIP super.img exact bytes differ from sparsecrclist segment CRCs")
             if len(new_crcs)!=int(crc_line(new_sparsecrc,"super").split()[1]):
-                fail("Packed super sparse CRC segment count mismatch")
+                fail("Packed sparse CRC count does not match actual image")
             if not {"flash_all.bat","flash_all.sh","flash_all_lock.bat","images/MT6789_Android_scatter.xml"}.issubset(seen):
                 fail("Stock Xiaomi flashing scripts or scatter not found")
             for name in ("flash_all.bat","flash_all_lock.bat","flash_all.sh"):
@@ -237,9 +234,7 @@ def main():
         write("FASTBOOT_TEST_VERIFICATION.json",json.dumps(report,indent=2)+"\n")
         (OUT/"ZIP_SHA256.txt").write_text(zip_sha+"  "+ZIP_NAME+"\n")
         (OUT/"PARTS_SHA256.txt").write_text("".join(x["sha256"]+"  "+x["filename"]+"\n" for x in parts))
-        # This per-file manifest is independently published for Windows preflight.
-        # Its super SHA MUST match the super bytes actually zipped and CRC-listed.
-        fastboot_fingerprints={
+        image_fingerprints={
             "images/super.img":m["new_super_sparse_sha256"],
             "images/vbmeta.img":hashlib.sha256(new_main).hexdigest(),
             "images/crclist.txt":hashlib.sha256(new_crc.encode("utf-8")).hexdigest(),
@@ -247,10 +242,10 @@ def main():
             "flash_all.bat":unchanged["flash_all.bat"],
         }
         (OUT/"FASTBOOT_IMAGE_SHA256.txt").write_text("".join(
-            value+"  "+path+"\n" for path,value in fastboot_fingerprints.items()
+            value+"  "+path+"\n" for path,value in image_fingerprints.items()
         ),encoding="utf-8")
-        write("fastboot-image-fingerprints.json",json.dumps(fastboot_fingerprints,indent=2)+"\n")
-        print("Build 5 extracted-image SHA256 manifest:",json.dumps(fastboot_fingerprints,indent=2),flush=True)
+        write("fastboot-image-fingerprints.json",json.dumps(image_fingerprints,indent=2)+"\n")
+        print("BUILD5 exact packed firmware hashes:",json.dumps(image_fingerprints,indent=2),flush=True)
         # Full reconstruction script for Windows users downloading GitHub Release assets.
         ps=r'''$ErrorActionPreference = "Stop"
 $zip = "yunluo_HyperOS1_Global_Build5_Official_v1.1.0_FULL_Fastboot.zip"
@@ -275,12 +270,12 @@ $ErrorActionPreference = "Stop"
 $checks = Join-Path $PSScriptRoot "FASTBOOT_IMAGE_SHA256.txt"
 if (-not (Test-Path -LiteralPath $checks -PathType Leaf)) { throw "Missing FASTBOOT_IMAGE_SHA256.txt next to this script" }
 if (-not $FirmwareDir) {
-    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot "images\\super.img") -PathType Leaf) {
+    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot "images\super.img") -PathType Leaf) {
         $FirmwareDir = $PSScriptRoot
     } else {
-        $candidates = @(Get-ChildItem -LiteralPath $PSScriptRoot -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "images\\super.img") -PathType Leaf })
+        $candidates = @(Get-ChildItem -LiteralPath $PSScriptRoot -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "images\super.img") -PathType Leaf })
         if ($candidates.Count -ne 1) {
-            throw "Cannot uniquely identify extracted firmware directory. Run with -FirmwareDir '\\path\\to\\extracted\\firmware'"
+            throw "Cannot uniquely identify extracted firmware directory. Run with -FirmwareDir 'C:\path\to\extracted\firmware'"
         }
         $FirmwareDir = $candidates[0].FullName
     }
@@ -288,40 +283,20 @@ if (-not $FirmwareDir) {
 $FirmwareDir = (Resolve-Path -LiteralPath $FirmwareDir).Path
 $verified = 0
 foreach ($line in Get-Content -LiteralPath $checks) {
-    if ($line -notmatch '^([0-9a-fA-F]{64})  (.+)
-            "HyperOS1 Yunluo Build5 v1.1.0 FULL custom fastboot firmware\\n"
-            "Release segments contain the COMPLETE firmware ZIP; download ALL .partNNN files\\n"
-            "plus ZIP_SHA256.txt and WINDOWS_JOIN_FULL_FIRMWARE.ps1 into one directory.\\n"
-            "PowerShell: powershell -ExecutionPolicy Bypass -File .\\\\WINDOWS_JOIN_FULL_FIRMWARE.ps1\\n"
-            "Verify the complete reconstructed ZIP before extracting.\\n"
-            "NEXT: extract ZIP and run VERIFY_BUILD5_FASTBOOT.ps1 from downloaded files.\\n"
-            "Place extracted firmware folder and VERIFY_BUILD5_FASTBOOT.ps1 and FASTBOOT_IMAGE_SHA256.txt in the same parent folder.\\n"
-            "Never flash if the script reports a super.img / sparsecrclist.txt checksum mismatch.\\n"
-            "GitHub limits each release asset to 2 GiB; no expiring Actions artifacts used.\\n"
-            "Never relock bootloader; stock flash_all.bat may erase your data.\\n")
-        # GitHub release max asset size 2 GiB, omit the already-verified monolithic ZIP.
-        final_zip.unlink()
-        write("status.txt",f"PASS: full release ZIP verified, split into {len(parts)} release segments; SHA256 {zip_sha}\n")
-    except Exception as exc:
-        write("status.txt",f"FAIL: {type(exc).__name__}: {exc}\n")
-        raise
-    finally:
-        if temp_zip.exists():temp_zip.unlink()
-if __name__=="__main__":main()
-) { throw "Malformed SHA256 manifest line: $line" }
+    if ($line -notmatch '^([0-9a-fA-F]{64})  (.+)$') { throw "Malformed SHA256 manifest line: $line" }
     $expected = $Matches[1].ToLowerInvariant()
     $relative = $Matches[2].Replace("/", [IO.Path]::DirectorySeparatorChar)
     $target = Join-Path $FirmwareDir $relative
     if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Missing firmware file: $target" }
     $actual = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $expected) {
-        throw "FIRMWARE IMAGE CHECKSUM MISMATCH: $relative expected $expected got $actual. DO NOT FLASH."
+        throw "FIRMWARE IMAGE SHA256 MISMATCH: $relative expected $expected got $actual. DO NOT FLASH."
     }
     $verified++
     Write-Host "VERIFIED: $relative"
 }
-if ($verified -ne 5) { throw "Expected exactly 5 extracted firmware file checks, found $verified" }
-Write-Host "PASS: all 5 firmware hashes, including super.img/sparsecrclist.txt, match official Build5. Only this test has passed; physical flashing remains unverified."
+if ($verified -ne 5) { throw "Expected exactly 5 firmware file checks, found $verified" }
+Write-Host "PASS: 5 extracted files including super.img and sparsecrclist.txt match Build5. On-device flashing still untested."
 '''
         (OUT/"VERIFY_BUILD5_FASTBOOT.ps1").write_text(check_ps,encoding="utf-8")
         (OUT/"DOWNLOAD_INSTRUCTIONS.txt").write_text(
@@ -330,6 +305,8 @@ Write-Host "PASS: all 5 firmware hashes, including super.img/sparsecrclist.txt, 
             "plus ZIP_SHA256.txt and WINDOWS_JOIN_FULL_FIRMWARE.ps1 into one directory.\\n"
             "PowerShell: powershell -ExecutionPolicy Bypass -File .\\\\WINDOWS_JOIN_FULL_FIRMWARE.ps1\\n"
             "Verify the complete reconstructed ZIP before extracting.\\n"
+            "NEXT: extract ZIP and run VERIFY_BUILD5_FASTBOOT.ps1 with FASTBOOT_IMAGE_SHA256.txt in the same folder as the extracted firmware.\\n"
+            "Do not flash if any extracted image hash differs from the release manifest.\\n"
             "GitHub limits each release asset to 2 GiB; no expiring Actions artifacts used.\\n"
             "Never relock bootloader; stock flash_all.bat may erase your data.\\n")
         # GitHub release max asset size 2 GiB, omit the already-verified monolithic ZIP.
