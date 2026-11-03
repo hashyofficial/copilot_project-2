@@ -37,8 +37,12 @@ jobs:
           import sys
           sys.path.insert(0,"scripts")
           from hyperos_build6 import selected, PROTECT, ADDON_PATHS
-          from hyperos_build5 import selected as original_selection
-          x=selected(); old=original_selection()
+          import re,pathlib
+          old={}
+          for line in pathlib.Path("config/hyperos-build5-official-selected.txt").read_text().splitlines():
+              match=re.fullmatch(r"\s*(\d+)\s+([A-Za-z0-9_.]+)\s*",line)
+              if match:old[match.group(2)]=int(match.group(1))
+          x=selected()
           assert len(old)==48 and len(x)==53
           assert set(x)==set(old)|set(ADDON_PATHS)
           assert all(x[k]==old[k] for k in old)
