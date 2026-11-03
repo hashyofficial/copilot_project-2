@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""Package verified HyperOS Final Build 1 test image as complete ORIGINAL Xiaomi fastboot ZIP.
+
+Only super.img, user's known-booting KernelSU Next boot.img, patched vbmeta.img, crclist.txt and sparsecrclist.txt differ.
+No tag, release, flash operation, or signing. Requires unlocked bootloader.
+"""
+import datetime
+import hashlib
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import stat
+import struct
+import sys
+import tarfile
+import zipfile
+import zlib
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"workflow"/"hyperos"))
+from firmware import VERSION,NAME,MD5
+from geometry import digest
+from hyperos_crc import sparse_crc, crc_line, replace_crc
+
+ROOT=Path(__file__).resolve().parents[1]
+STAGING=Path(os.environ["FINAL_PRIVATE"])
+REPORT=Path(os.environ["FINAL_REPORTS"])
+ARCHIVE=Path(os.environ["HYPEROS_ARCHIVE"])
+OUT=Path(os.environ["FINAL_OUTPUT"])
+ZIP_NAME="firmware.zip"
+ROOT_NAME="yunluo_global_images_OS1.0.9.0.ULYMIXM_14.0"
+EXPECTED_ORIGINAL_VBMETA_SHA="cc34aa04532fc46f70558d0cd98bc4a4f008e9aa795ac9762cec220fd52c80a0"
+# Pinned from independently successful gdown preflight of user-provided working image.
+EXPECTED_KSU_BOOT_SHA256="32eb0d6558828992e4bc64aeb217dcd38e73875f65e32a24a17c8c578aff3c81"
+KSU_BOOT=STAGING/"boot.img"
+CHANGED={"images/super.img","images/boot.img","images/vbmeta.img","images/crclist.txt","images/sparsecrclist.txt"}
+CHUNK=8*1024*1024
+
+def fail(text):raise RuntimeError(text)
+def hashfile(file):
+    h=hashlib.sha256()
+    with file.open("rb") as f:
+        for b in iter(lambda:f.read(CHUNK),b""):h.update(b)
+    return h.hexdigest()
+def write(name,content):
+    REPORT.mkdir(parents=True,exist_ok=True)
+    (REPORT/name).write_text(content,encoding="utf-8")
+def checksum(source):
+    h=hashlib.sha256()
+    with source:
+        for b in iter(lambda:source.read(CHUNK),b""):h.update(b)
+    return h.hexdigest()
+def zinfo(name,mode,mtime,store=False):
+    t=datetime.datetime.fromtimestamp(max(mtime,315532800),datetime.timezone.utc)
+    info=zipfile.ZipInfo(name,(t.year,t.month,t.day,t.hour,t.minute,t.second))
+    info.create_system=3
+    info.external_attr=(stat.S_IFREG|(mode&0o7777))<<16
+    info.compress_type=zipfile.ZIP_STORED if store else zipfile.ZIP_DEFLATED
+    info._compresslevel=None if store else 1
+    return info
+def append(z,info,source):
+    h=hashlib.sha256()
+    with z.open(info,"w",force_zip64=True) as out:
+        while b:=source.read(CHUNK):
+            out.write(b);h.update(b)
+    return h.hexdigest()
+def patch_vbmeta(data):
+    if hashlib.sha256(data).hexdigest()!=EXPECTED_ORIGINAL_VBMETA_SHA:
+        fail("Source vbmeta original hash mismatch")
+    if data[:4]!=b"AVB0" or len(data)<256:
+        fail("Stock vbmeta AVB header invalid")
+    alg=struct.unpack_from(">I",data,28)[0]
+    flags=struct.unpack_from(">I",data,120)[0]
+    if flags!=0 or alg not in (1,2,3,4,5,6):
+        fail(f"Unexpected vbmeta algorithm/flags: {alg}, {flags}")
+    out=bytearray(data)
+    struct.pack_into(">I",out,120,3)
+    changed=sum(a!=b for a,b in zip(data,out))
+    if changed!=1:
+        fail(f"VBMeta flags patch unexpectedly changed {changed} bytes")
+    if struct.unpack_from(">I",out,120)[0]!=3:
+        fail("AVB disabled flags missing")
+    return bytes(out)
+def main():
+    OUT.mkdir(parents=True,exist_ok=True)
+    m=json.loads((STAGING/"manifest.json").read_text())
+    if (m["source_md5"]!=MD5 or m["selected_package_count"]!=54 or m["removed_apk_count"]!=54
+        or m.get("entire_app_folders_removed")!=52
+        or m.get("individual_shared_overlay_apks_removed")!=2
+        or m.get("all_selected_folder_paths_absent_after_rebuild") is not True
+        or m.get("additional_app_folders_recursively_removed")!=6
+        or not m["source_lp_metadata_preserved"] or not m["retained_apks_same_bytes_owner_mode_selinux"]
+        or m.get("owned_file_count_removed",0)<46
+        or not all(x.get("removed_folder_contents_audited") for x in m["partitions"])):
+        fail("Modified super did not pass preflight")
+    if not KSU_BOOT.is_file() or hashfile(KSU_BOOT)!=EXPECTED_KSU_BOOT_SHA256:
+        fail("Downloaded KernelSU Next boot.img does not match known-tested SHA256")
+    new_boot=KSU_BOOT.read_bytes()
+    if new_boot[:8]!=b"ANDROID!" or len(new_boot)!=67_108_864:
+        fail("KernelSU boot.img invalid v4 Android magic or unexpected file size")
+    if struct.unpack_from("<I",new_boot,40)[0]!=4:
+        fail("KernelSU boot.img is not the tested Android boot v4 header")
+    if not 0<struct.unpack_from("<I",new_boot,8)[0]<len(new_boot):
+        fail("KernelSU v4 kernel section invalid")
+    sparse=STAGING/"super.sparse.img"
+    if hashfile(sparse)!=m["new_super_sparse_sha256"]:
+        fail("Modified super SHA256 invalid")
+    if digest(ARCHIVE,"md5")!=MD5:
+        fail("Firmware archive MD5 mismatch")
+    with sparse.open("rb") as f:new_crcs=sparse_crc(f)
+    replacements={}
+    original_crcs=None
+    seen=set()
+    unchanged={}
+    keep_modes={}
+    temp_zip=OUT/(ZIP_NAME+".incomplete")
+    if temp_zip.exists():temp_zip.unlink()
+    try:
+        with zipfile.ZipFile(temp_zip,"w",allowZip64=True) as z,tarfile.open(ARCHIVE,"r|gz") as tgz:
+            for entry in tgz:
+                path=PurePosixPath(entry.name)
+                if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0]!=ROOT_NAME:
+                    fail("Unexpected stock firmware entry: "+entry.name)
+                if entry.isdir():
+                    continue
+                if not entry.isfile() or entry.issym() or entry.islnk() or entry.isdev():
+                    fail("Unexpected unsafe stock firmware type "+entry.name)
+                rel=str(path.relative_to(ROOT_NAME))
+                if rel in seen:fail("Duplicate stock package file "+rel)
+                seen.add(rel)
+                with tgz.extractfile(entry) as source:
+                    if rel=="images/super.img":
+                        original_crcs=sparse_crc(source)
+                        keep_modes[rel]=(entry.mode,entry.mtime)
+                        print("Source Xiaomi CRC segments:",len(original_crcs),flush=True)
+                    elif rel in CHANGED:
+                        replacements[rel]=source.read()
+                        keep_modes[rel]=(entry.mode,entry.mtime)
+                    else:
+                        unchanged[rel]=append(z,zinfo(entry.name,entry.mode,entry.mtime),source)
+                if len(seen)%10==0:print("Stock firmware files processed:",len(seen),flush=True)
+            if not CHANGED.issubset(seen) or len(seen)<35 or original_crcs is None:
+                fail("Original Xiaomi firmware file list incomplete")
+            old_boot=replacements["images/boot.img"]
+            if old_boot[:8]!=b"ANDROID!" or len(old_boot)!=len(new_boot):
+                fail("Boot replacement differs from stock partition image geometry")
+            original_boot_crc=int(crc_line(replacements["images/crclist.txt"].decode("utf-8"),"boot_a").split()[1],16)
+            if original_boot_crc!=zlib.crc32(old_boot):
+                fail("Original Xiaomi boot_a CRC checksum does not match stock boot.img")
+            if old_boot==new_boot:
+                fail("Patched KernelSU Next boot image unexpectedly identical to stock")
+            old_main=replacements["images/vbmeta.img"]
+            new_main=patch_vbmeta(old_main)
+            crclist=replacements["images/crclist.txt"].decode("utf-8")
+            sparsecrclist=replacements["images/sparsecrclist.txt"].decode("utf-8")
+            original_vbcrc=int(crc_line(crclist,"vbmeta_a").split()[1],16)
+            if original_vbcrc!=zlib.crc32(old_main):
+                fail("Cannot validate original vbmeta_a checksum")
+            fields=crc_line(sparsecrclist,"super").split()
+            if len(fields)!=len(original_crcs)+2 or int(fields[1])!=len(original_crcs):
+                fail("Xiaomi stock super sparse CRC segments differ")
+            if [int(x,16) for x in fields[2:]]!=original_crcs:
+                fail("CRC calculation does not reproduce Xiaomi original super CRC values")
+            new_crc=replace_crc(crclist,"vbmeta_a","vbmeta_a "+hex(zlib.crc32(new_main)))
+            new_crc=replace_crc(new_crc,"boot_a","boot_a "+hex(zlib.crc32(new_boot)))
+            new_sparsecrc=replace_crc(sparsecrclist,"super",
+                            "super "+str(len(new_crcs))+" "+" ".join(hex(x) for x in new_crcs))
+            changed_payloads=[
+                ("images/vbmeta.img",new_main),
+                ("images/boot.img",new_boot),
+                ("images/crclist.txt",new_crc.encode("utf-8")),
+                ("images/sparsecrclist.txt",new_sparsecrc.encode("utf-8")),
+            ]
+            for rel,blob in changed_payloads:
+                mode,mtime=keep_modes[rel]
+                append(z,zinfo(ROOT_NAME+"/"+rel,mode,mtime),io.BytesIO(blob))
+            mode,mtime=keep_modes["images/super.img"]
+            with sparse.open("rb") as f:
+                new_super_sha=append(z,zinfo(ROOT_NAME+"/images/super.img",mode,mtime,True),f)
+            if new_super_sha!=m["new_super_sparse_sha256"]:
+                fail("ZIP source super checksum mismatch")
+        with zipfile.ZipFile(temp_zip,"r") as z:
+            paths=z.namelist()
+            if len(paths)!=len(seen) or {ROOT_NAME+"/"+k for k in seen}!=set(paths):
+                fail("Fastboot ZIP file list differs from original Xiaomi")
+            if z.testzip() is not None:fail("ZIP internal CRC failed")
+            if z.read(ROOT_NAME+"/images/vbmeta.img")!=new_main:
+                fail("vbmeta patch not present in ZIP")
+            if z.read(ROOT_NAME+"/images/boot.img")!=new_boot:
+                fail("User-provided KernelSU boot.img not present verbatim in ZIP")
+            if int(crc_line(z.read(ROOT_NAME+"/images/crclist.txt").decode("utf-8"),"boot_a").split()[1],16)!=zlib.crc32(z.read(ROOT_NAME+"/images/boot.img")):
+                fail("Packed boot_a CRC does not match KernelSU boot.img")
+            if int(crc_line(z.read(ROOT_NAME+"/images/crclist.txt").decode("utf-8"),"vbmeta_a").split()[1],16)!=zlib.crc32(new_main):
+                fail("Packed vbmeta_a CRC does not match patched vbmeta.img")
+            if z.read(ROOT_NAME+"/images/sparsecrclist.txt")!=new_sparsecrc.encode("utf-8"):
+                fail("ZIP sparsecrclist differs from calculated CRC list")
+            if z.read(ROOT_NAME+"/images/crclist.txt")!=new_crc.encode("utf-8"):
+                fail("ZIP crclist differs from updated vbmeta CRC")
+            with z.open(ROOT_NAME+"/images/super.img") as file:
+                if checksum(file)!=m["new_super_sparse_sha256"]:
+                    fail("ZIP super image hash verification failed")
+            with z.open(ROOT_NAME+"/images/super.img") as file:
+                if sparse_crc(file)!=new_crcs:
+                    fail("ZIP super.img exact bytes differ from sparsecrclist segment CRCs")
+            if len(new_crcs)!=int(crc_line(new_sparsecrc,"super").split()[1]):
+                fail("Packed sparse CRC count does not match actual image")
+            if not {"flash_all.bat","flash_all.sh","flash_all_lock.bat","images/MT6789_Android_scatter.xml"}.issubset(seen):
+                fail("Stock Xiaomi flashing scripts or scatter not found")
+            for name in ("flash_all.bat","flash_all_lock.bat","flash_all.sh"):
+                if hashlib.sha256(z.read(ROOT_NAME+"/"+name)).hexdigest()!=unchanged[name]:
+                    fail("Original Xiaomi flashing script altered: "+name)
+        final_zip=OUT/ZIP_NAME
+        temp_zip.rename(final_zip)
+        zip_sha=hashfile(final_zip)
+        print("Built complete flashable fastboot release ZIP",final_zip.name,final_zip.stat().st_size,zip_sha,flush=True)
+        # FULL ZIP verified; GitHub Release 2-GiB-per-file limit requires numbered asset segments.
+        part_size=1_850_000_000
+        parts=[]
+        with final_zip.open("rb") as reader:
+            idx=0
+            while True:
+                head=reader.read(part_size)
+                if not head:break
+                idx+=1
+                out=OUT/(ZIP_NAME+f".part{idx:03d}")
+                out.write_bytes(head)
+                parts.append({"filename":out.name,"sha256":hashfile(out),"bytes":len(head)})
+        if sum(x["bytes"] for x in parts)!=final_zip.stat().st_size:
+            fail("Firmware split output byte count mismatch")
+        overall=hashlib.sha256()
+        for x in parts:
+            with (OUT/x["filename"]).open("rb") as f:
+                for b in iter(lambda:f.read(CHUNK),b""):overall.update(b)
+        if overall.hexdigest()!=zip_sha:fail("Split reassembly checksum mismatch")
+        report={"status":"offline_verified_NOT_device_boot_tested","device":"yunluo",
+                "rom":"HyperOS 1 Global","source_version":VERSION,
+                "source_md5":MD5,"selected_package_count":54,"removed_apk_count":54,
+                "notes_folder_removed":True,
+                "original_boot_sha256":hashlib.sha256(old_boot).hexdigest(),
+                "patched_kernelsu_next_boot_sha256":hashfile(KSU_BOOT),
+                "patched_boot_bytes":len(new_boot),
+                "boot_a_crc32":hex(zlib.crc32(new_boot)),
+                "vbmeta_a_crc32":hex(zlib.crc32(new_main)),
+                "tested_boot_sha256_pin_matches":True,
+                "additional_stock_app_folders_removed":m["additional_stock_apps_removed"],
+                "netflix_is_user_data_not_stock_super":True,
+                "entire_app_folders_removed":m["entire_app_folders_removed"],
+                "individual_shared_overlay_apks_removed":m["individual_shared_overlay_apks_removed"],
+                "all_selected_folder_paths_absent_after_rebuild":m["all_selected_folder_paths_absent_after_rebuild"],
+                "patched_main_vbmeta_sha256":hashlib.sha256(new_main).hexdigest(),
+                "vbmeta_flags":3,"vbmeta_signature_invalid_after_patch":True,
+                "other_firmware_files_unchanged":True,
+                "stock_original_super_crc_segments":len(original_crcs),
+                "modified_super_crc_segments":len(new_crcs),
+                "modified_images":["images/super.img","images/boot.img","images/vbmeta.img"],
+                "updated_checksum_text":["images/crclist.txt","images/sparsecrclist.txt"],
+                "full_zip_file":ZIP_NAME,"full_zip_bytes":final_zip.stat().st_size,
+                "full_zip_sha256":zip_sha,"parts":parts,
+                "flash_scripts_preserved":True,"original_flash_all_bat_sha256":unchanged["flash_all.bat"],
+                "release_target":"v1.0.0",
+                "first_super_sparse_crc":hex(new_crcs[0]),
+                "last_super_sparse_crc":hex(new_crcs[-1]),
+                "exact_archived_super_crc_recheck":True,
+                "exact_archived_super_sha256_recheck":True,
+                "owned_file_count_removed":m["owned_file_count_removed"],
+                "owned_native_libraries_removed":m["owned_native_libraries_removed"],
+                "owned_compiled_files_removed":m["owned_compiled_files_removed"],
+                "stock_system_apex_unchanged":True,
+                "all_stock_google_and_xiaomi_core_keeps_verified":True,
+                "shared_native_libraries_not_blindly_removed":True,
+                "user_warning":"CUSTOM ROM official project release; not Xiaomi official or device boot-tested. Unlocked bootloader required, never relock. Stock flash_all may erase userdata. Keep boot-tested Build2 rescue image."}
+        write("FASTBOOT_TEST_VERIFICATION.json",json.dumps(report,indent=2)+"\n")
+        (OUT/"ZIP_SHA256.txt").write_text(zip_sha+"  "+ZIP_NAME+"\n")
+        (OUT/"PARTS_SHA256.txt").write_text("".join(x["sha256"]+"  "+x["filename"]+"\n" for x in parts))
+        image_fingerprints={
+            "images/super.img":m["new_super_sparse_sha256"],
+            "images/boot.img":hashfile(KSU_BOOT),
+            "images/vbmeta.img":hashlib.sha256(new_main).hexdigest(),
+            "images/crclist.txt":hashlib.sha256(new_crc.encode("utf-8")).hexdigest(),
+            "images/sparsecrclist.txt":hashlib.sha256(new_sparsecrc.encode("utf-8")).hexdigest(),
+            "flash_all.bat":unchanged["flash_all.bat"],
+        }
+        (OUT/"FASTBOOT_IMAGE_SHA256.txt").write_text("".join(
+            value+"  "+path+"\n" for path,value in image_fingerprints.items()
+        ),encoding="utf-8")
+        write("fastboot-image-fingerprints.json",json.dumps(image_fingerprints,indent=2)+"\n")
+        print("FINAL exact packed firmware hashes:",json.dumps(image_fingerprints,indent=2),flush=True)
+        # Full reconstruction script for Windows users downloading GitHub Release assets.
+        ps=r'''$ErrorActionPreference = "Stop"
+$zip = "yunluo_HyperOS1_Global_FinalBuild1_Official_v1.0.0_FULL_Fastboot.zip"
+$expected = (Get-Content "ZIP_SHA256.txt" -Raw).Split(" ")[0].Trim()
+$parts = Get-ChildItem -File -Filter "$zip.part*" | Sort-Object Name
+if ($parts.Count -lt 2) { throw "Missing release ZIP parts" }
+$out = [System.IO.File]::Create($zip)
+try {
+    foreach ($part in $parts) {
+        Write-Host "Joining $($part.Name)"
+        $source = [System.IO.File]::OpenRead($part.FullName)
+        try { $source.CopyTo($out) } finally { $source.Dispose() }
+    }
+} finally { $out.Dispose() }
+$actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+if ($actual -ne $expected.ToLower()) { throw "SHA256 mismatch; do not flash" }
+Write-Host "COMPLETE FASTBOOT ZIP VERIFIED: $zip"
+'''
+        (OUT/"WINDOWS_JOIN_FULL_FIRMWARE.ps1").write_text(ps,encoding="utf-8")
+        check_ps=r'''param([string]$FirmwareDir = "")
+$ErrorActionPreference = "Stop"
+$checks = Join-Path $PSScriptRoot "FASTBOOT_IMAGE_SHA256.txt"
+if (-not (Test-Path -LiteralPath $checks -PathType Leaf)) { throw "Missing FASTBOOT_IMAGE_SHA256.txt next to this script" }
+if (-not $FirmwareDir) {
+    if (Test-Path -LiteralPath (Join-Path $PSScriptRoot "images\super.img") -PathType Leaf) {
+        $FirmwareDir = $PSScriptRoot
+    } else {
+        $candidates = @(Get-ChildItem -LiteralPath $PSScriptRoot -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "images\super.img") -PathType Leaf })
+        if ($candidates.Count -ne 1) {
+            throw "Cannot uniquely identify extracted firmware directory. Run with -FirmwareDir 'C:\path\to\extracted\firmware'"
+        }
+        $FirmwareDir = $candidates[0].FullName
+    }
+}
+$FirmwareDir = (Resolve-Path -LiteralPath $FirmwareDir).Path
+$verified = 0
+foreach ($line in Get-Content -LiteralPath $checks) {
+    if ($line -notmatch '^([0-9a-fA-F]{64})  (.+)$') { throw "Malformed SHA256 manifest line: $line" }
+    $expected = $Matches[1].ToLowerInvariant()
+    $relative = $Matches[2].Replace("/", [IO.Path]::DirectorySeparatorChar)
+    $target = Join-Path $FirmwareDir $relative
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Missing firmware file: $target" }
+    $actual = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        throw "FIRMWARE IMAGE SHA256 MISMATCH: $relative expected $expected got $actual. DO NOT FLASH."
+    }
+    $verified++
+    Write-Host "VERIFIED: $relative"
+}
+if ($verified -ne 6) { throw "Expected exactly 6 firmware file checks, found $verified" }
+Write-Host "PASS: all 6 extracted files (super, KernelSU Next boot, vbmeta, both CRCs and stock flash_all) match release. Physical flashing still untested."
+'''
+        (OUT/"VERIFY_FINAL_FASTBOOT.ps1").write_text(check_ps,encoding="utf-8")
+        (OUT/"DOWNLOAD_INSTRUCTIONS.txt").write_text(
+            "HyperOS 1 Yunluo Build 1 - Final Firmware Release (KernelSU Next)\\n"
+            "GitHub 2-GiB file limit: use ONE_CLICK_DOWNLOAD_AND_EXTRACT.ps1 for zero manual joining.\\n"
+            "It downloads all .partNNN assets, verifies and reassembles firmware.zip automatically.\\n"
+            "PowerShell: powershell -ExecutionPolicy Bypass -File .\\\\ONE_CLICK_DOWNLOAD_AND_EXTRACT.ps1\\n"
+            "Verify the complete reconstructed ZIP before extracting.\\n"
+            "Never flash until the extracted firmware passes all 6 SHA256 checks.\\n"
+            "Do not flash if any extracted image hash differs from the release manifest.\\n"
+            "GitHub limits each release asset to 2 GiB; no expiring Actions artifacts used.\\n"
+            "Netflix in /data/app is separate. Optional REMOVE_NETFLIX_USER_APP.ps1 after boot.\\n"
+            "Never relock bootloader; stock flash_all.bat may erase your data.\\n")
+        # GitHub release max asset size 2 GiB, omit the already-verified monolithic ZIP.
+        final_zip.unlink()
+        write("status.txt",f"PASS: full release ZIP verified, split into {len(parts)} release segments; SHA256 {zip_sha}\n")
+    except Exception as exc:
+        write("status.txt",f"FAIL: {type(exc).__name__}: {exc}\n")
+        raise
+    finally:
+        if temp_zip.exists():temp_zip.unlink()
+if __name__=="__main__":main()
